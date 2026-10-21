@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderInput } from 'claude-code'
 
-import type { Progress } from '../types'
+import type { Progress, Steps } from '../types'
 
 // The bar moves on one thing only: the model's own progress tags, and only forward.
 const progress = atom(
@@ -9,22 +9,18 @@ const progress = atom(
   { percent: null, phase: 'idle' } as Progress,
 )
 
-// How many steps the session's task list has (the desktop app's plan, or TodoWrite's list): the
-// bar is cut into that many sections. Only the model's estimate fills them.
-const steps = atom({ plugin: 'progress-bar', key: 'steps' } as const, 0)
-
-// Bumped at each swap while the bar moves, so the band takes a fresh drawing of it.
-const tick = atom({ plugin: 'progress-bar', key: 'tick' } as const, 0)
-
+// The session's task list (the desktop app's plan, or TodoWrite's list): the bar is cut into one
+// section per step, the finished steps fill theirs, and the model's estimate fills the one it's on.
+const steps = atom({ plugin: 'progress-bar', key: 'steps' } as const, { total: 0, done: 0 } as Steps)
 
 // `[D20.9%]`; the leading D is optional so a plain `[20.9%]` counts too.
 const TAG = /\[D?\s*(\d{1,3}(?:\.\d+)?)\s*%\]/g
 
 const INSTRUCTIONS = `# Progress estimate
 
-The person tracks your progress on their latest request with a progress bar. Each time you write text to them while working on it (a status update between tool calls, a note on what you found or will do next), include your honest estimate of how complete the whole request is, as a tag like [D20.9%], anywhere in that text.
+The person tracks your progress on their latest request with a progress bar. Each time you write text to them while working on it (a status update between tool calls, a note on what you found or will do next), include your honest estimate of how complete the work is, as a tag like [D20.9%], anywhere in that text.
 
-- Estimate the whole request, not the current step. Use any precision you like.
+- While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. Finishing a step fills its section. With no list, the tag is your estimate for the whole request.
 - The bar only moves forward: a lower estimate than an earlier one leaves it where it is, so don't overshoot early.
 - When you finish, end your final message with [D100%]. Leave the tag out of replies to quick questions that take no work.
 - The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
@@ -32,7 +28,7 @@ The person tracks your progress on their latest request with a progress bar. Eac
 // After this many tool calls in a row with no estimate, the next result carries a reminder.
 const REMIND_AFTER = 3
 
-const REMINDER = `The progress bar has had no estimate for the last ${REMIND_AFTER} tool calls. Include a tag like [D40%] in your next update to the person, with your estimate for the whole request.`
+const REMINDER = `The progress bar has had no estimate for the last ${REMIND_AFTER} tool calls. Include a tag like [D40%] in your next update to the person, with your estimate for the step you have in progress (or for the whole request, with no task list).`
 
 /** The last progress tag in a message's text blocks, clamped to 0-100. */
 export function lastPercent(texts: readonly string[]): number | null {
@@ -55,6 +51,20 @@ export function settle(shown: number | null, stated: number): number {
   return shown === null ? stated : Math.max(shown, stated)
 }
 
+/**
+ * Where on the whole bar (0-100) an estimate puts it: with a task list, that far into the step in
+ * progress, after the steps done; with none, the estimate itself.
+ */
+export function place(stated: number, { total, done }: Steps): number {
+  if (total < 1) return stated
+  return Math.min(100, ((Math.min(done, total) + stated / 100) / total) * 100)
+}
+
+/** A list's steps and how many are done, from its items' statuses. */
+export function tally(statuses: readonly string[]): Steps {
+  return { total: statuses.length, done: statuses.filter(status => status === 'completed').length }
+}
+
 function format(percent: number): string {
   return `${percent.toFixed(percent % 1 === 0 ? 0 : 1)}%`
 }
@@ -63,72 +73,61 @@ const H = 14
 const PAD = 5 // room around the bar for the gold glow and sparkles
 const MARGIN = 6
 
-/** Seconds a fill takes to ease from where it is to a new estimate. */
-const RAMP_S = 0.55
-/** Seconds the finale's flourish runs after the fill reaches the end. */
-const FINALE_S = 2.6
-// The ease, as SMIL keySplines and as the same cubic for working out where a sweep is.
-const SPLINE = [0.45, 0, 0.25, 1] as const
+// The fill's easing, in and out: a cubic bezier from time to distance, as SMIL spells it.
+const EASE = { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }
+const KEY_SPLINE = `${EASE.x1} ${EASE.y1} ${EASE.x2} ${EASE.y2}`
 
-/** How far through the ease (0 to 1) a sweep is when `t` (0 to 1) of its time has gone by. */
-function eased(t: number): number {
-  if (t <= 0) return 0
-  if (t >= 1) return 1
-  const [x1, y1, x2, y2] = SPLINE
-  const bez = (a: number, b: number, s: number) => 3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3
-  let lo = 0, hi = 1
-  for (let i = 0; i < 24; i++) {
-    const mid = (lo + hi) / 2
-    if (bez(x1, x2, mid) < t) lo = mid
-    else hi = mid
-  }
-  return bez(y1, y2, (lo + hi) / 2)
+/** Seconds the fill takes to ease from `from` to `to`: a short move is quick, a long one unhurried. */
+export function fillSeconds(from: number, to: number): number {
+  return to - from < 0.0005 ? 0 : 0.35 + 0.9 * (to - from)
 }
 
-// The finale's timing, in seconds after the fill reaches the end.
+/** Where along the ease (0-1 of its time) the fill has covered fraction `k` of its move. */
+function easeTime(k: number): number {
+  const bezier = (a: number, b: number, t: number) => 3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t
+  let lo = 0
+  let hi = 1
+  for (let step = 0; step < 24; step++) {
+    const mid = (lo + hi) / 2
+    if (bezier(EASE.y1, EASE.y2, mid) < k) lo = mid
+    else hi = mid
+  }
+  return bezier(EASE.x1, EASE.x2, (lo + hi) / 2)
+}
+
+// The finale's timing, in seconds after it starts.
 const SHINE_S = 0.6
 const BLINK_S = 1.2
 const BLINKS = [0, 1, 0, 1, 0, 1, 0.45]
 const SPARKLES = [0.04, 0.16, 0.28, 0.4, 0.52, 0.64, 0.76, 0.88, 0.97]
 const SPARKLE_S = 0.6
 
-/** How far through its time (0 to 1) an ease is when it has gone `p` (0 to 1) of the way. */
-function uneased(p: number): number {
-  let lo = 0, hi = 1
-  for (let i = 0; i < 24; i++) {
-    const mid = (lo + hi) / 2
-    if (eased(mid) < p) lo = mid
-    else hi = mid
-  }
-  return (lo + hi) / 2
-}
-
 /** Seconds a section that has just filled blinks gold. */
 const SECTION_BLINK_S = 0.6
 
 /**
- * When (seconds into the ease from `from` to `to`) each section the fill finishes blinks: as the
- * fill reaches its end, but never before the one before it has finished blinking, so a sweep across
- * several reads as one blink after another. The last section's blink is the finale's when the ask is
- * done.
+ * When (seconds into the drawing) each section the move from `from` to `to` finishes blinks: as
+ * the fill passes its end, but never before the section before it has finished blinking, so
+ * finishing several reads as one blink after another. The last section's blink is the finale's
+ * when the ask is done.
  */
 export function blinkTimes(from: number, to: number, n: number, isDone: boolean): { i: number; at: number }[] {
   if (n < 2 || to - from < 0.0005) return []
+  const seconds = fillSeconds(from, to)
   const times: { i: number; at: number }[] = []
   for (let i = 0; i < n - (isDone ? 1 : 0); i++) {
     const end = (i + 1) / n
     if (from < end - 0.0005 && end <= to + 0.0005) {
-      const reached = RAMP_S * uneased((end - from) / (to - from))
-      const free = times.length > 0 ? times[times.length - 1]!.at + SECTION_BLINK_S : 0
-      times.push({ i, at: Math.max(reached, free) })
+      const arrival = seconds * easeTime((end - from) / (to - from))
+      const previous = times.length === 0 ? -Infinity : times[times.length - 1]!.at + SECTION_BLINK_S
+      times.push({ i, at: Math.max(arrival, previous) })
     }
   }
   return times
 }
 
-/** A sparkle that pops once at CSS position `x` and row `y`, starting `begin` seconds from now (negative: already that far in). */
+/** A sparkle that pops once at CSS position `x` and row `y`, `begin` seconds into the drawing. */
 function sparkle(x: string, y: number, scale: number, begin: number): string {
-  if (begin < -SPARKLE_S) return ''
   const t = begin.toFixed(3)
   return `<use href="#star" y="${y}" opacity="0" style="x:${x};transform-box:fill-box;transform-origin:center">
   <animate attributeName="opacity" values="0;1;0" dur="${SPARKLE_S}s" begin="${t}s" fill="freeze"/>
@@ -137,30 +136,32 @@ function sparkle(x: string, y: number, scale: number, begin: number): string {
 }
 
 /**
- * The bar: a rounded outline across the band with an inset fill, easing from `from` to `to`
- * (fractions of the bar) and already `elapsed` seconds into that ease, so a drawing handed over
- * partway through carries on from where the last one was rather than starting over. The fill
- * reveals a fixed blue-to-green ramp laid along the whole bar, so its colour follows how far it
- * has got. `finale` is how many seconds into the end-of-ask flourish the drawing starts (null for
- * none; it may be negative, still to come). With `from` equal to `to` and no finale it holds no
- * animation at all. Explicit colours: the drawing doesn't inherit currentColor, and the band
- * refuses a drawing with a <style> element.
+ * The bar: a rounded outline across the band with an inset fill that eases from `from` to `to`
+ * (fractions of the bar) and stays there. The fill reveals a fixed blue-to-green ramp laid along
+ * the whole bar, so its colour follows how far it has got. Each section the move finishes blinks
+ * gold as the fill passes its end; when the ask is done the outline turns gold on arrival and the
+ * finale plays once, leaving a soft gold glow. Everything in it plays from when the drawing is
+ * mounted and freezes where it ends, so a drawing is one state and never needs another to finish
+ * it. Explicit colours: the drawing doesn't inherit currentColor, and the band refuses a drawing
+ * with a <style> element.
  */
-export function battery(from: number, to: number, elapsed: number, isDone: boolean, finale: number | null, n = 1): string {
+export function battery(from: number, to: number, isDone: boolean, n = 1): string {
   const inset = 2.5
   const bar = `(100% - ${2 * MARGIN}px)`
   const along = (k: number) => `calc(${MARGIN}px + ${bar} * ${k.toFixed(4)})`
   const inner = `(${bar} - ${2 * inset}px)`
-  const base = Math.max(from, to)
-  const isEasing = Math.abs(from - to) > 0.0005 && elapsed !== Infinity
-  const ramp = isEasing
-    ? `<animateTransform attributeName="transform" type="scale" values="${(from / base).toFixed(4)} 1;${(to / base).toFixed(4)} 1" dur="${RAMP_S}s" begin="${(-elapsed).toFixed(3)}s" calcMode="spline" keyTimes="0;1" keySplines="${SPLINE.join(' ')}" fill="freeze"/>`
+  const seconds = fillSeconds(from, to)
+  // The fill is the whole inner bar, shown through a clip that is scaled to the estimate; easing
+  // the clip's scale moves the fill without moving the ramp under it.
+  const move = seconds > 0
+    ? `<animateTransform attributeName="transform" type="scale" additive="sum" from="${from.toFixed(4)} 1" to="${to.toFixed(4)} 1" dur="${seconds.toFixed(3)}s" calcMode="spline" keySplines="${KEY_SPLINE}" keyTimes="0;1" fill="freeze"/>`
     : ''
-  const shown = isEasing ? base : to
-  const body = shown > 0.0005
-    ? `<rect y="${inset}" height="${H - 2 * inset}" rx="2.5" fill="url(#ramp)" transform="scale(${isEasing ? (onCurve(from, to, Math.min(elapsed, RAMP_S)) / base).toFixed(4) : '1'} 1)" style="x:${MARGIN + inset}px;width:max(2px, calc(${inner} * ${shown.toFixed(4)}));transform-box:fill-box;transform-origin:left center">${ramp}</rect>`
+  const reveal = `<clipPath id="fill"><rect y="${inset}" height="${H - 2 * inset}" transform="translate(${MARGIN + inset} 0)${move ? '' : ` scale(${to.toFixed(4)} 1)`}" style="x:0;width:calc${inner}">${move}</rect></clipPath>`
+  const body = `<rect y="${inset}" height="${H - 2 * inset}" rx="2.5" fill="url(#ramp)" clip-path="url(#fill)" style="x:${MARGIN + inset}px;width:calc${inner}"/>`
+  // The outline turns gold as the fill arrives at the end of a finished ask.
+  const outlineAt = (begin: number) => isDone
+    ? `<animate attributeName="stroke" to="#d9a521" dur="0.25s" begin="${begin.toFixed(3)}s" fill="freeze"/>`
     : ''
-  const outline = isDone ? '#d9a521' : '#8a8a8a'
   // With a task list, the one fill shows through n sections, so it moves exactly as one bar does
   // and reads as one bar filling across them.
   const gap = 4
@@ -172,124 +173,94 @@ export function battery(from: number, to: number, elapsed: number, isDone: boole
   const cut = n > 1
     ? `<clipPath id="sec">${Array.from({ length: n }, (_, i) => `<rect y="${inset}" height="${H - 2 * inset}" rx="2.5" style="${section(i, -inset)}"/>`).join('')}</clipPath>`
     : ''
+  const blinks = blinkTimes(from, to, n, isDone)
+  const finaleAt = Math.max(seconds, ...blinks.map(({ at }) => at + SECTION_BLINK_S))
   const outlines = n > 1
-    ? Array.from({ length: n }, (_, i) => `<rect y="0.5" height="${H - 1}" rx="${n > 6 ? 3 : 4}" fill="none" stroke="${outline}" stroke-width="1" style="${section(i, -0.5)}"/>`).join('')
-    : `<rect y="0.5" height="${H - 1}" rx="4" fill="none" stroke="${outline}" stroke-width="1" style="x:${MARGIN + 0.5}px;width:calc(${bar} - 1px)"/>`
-  // A section the fill finishes during this ease blinks gold, with a few sparkles, one after another.
-  const blinks = !isEasing
-    ? ''
-    : blinkTimes(from, to, n, isDone)
-        .map(({ i, at }) => {
-          const begin = at - elapsed
-          if (begin < -SECTION_BLINK_S - SPARKLE_S) return ''
-          return `<rect y="-1.5" height="${H + 2}" rx="5" fill="none" stroke="#ffd54a" stroke-width="2" filter="url(#glow)" opacity="0" style="${section(i, 1.5)}"><animate attributeName="opacity" values="0;1;0;1;0" dur="${SECTION_BLINK_S}s" begin="${begin.toFixed(3)}s" fill="freeze"/></rect>`
-            + [0.2, 0.5, 0.8].map((k, j) => sparkle(along((i + k) / n), j % 2 ? -2 : H + 2, 0.6, begin + 0.05 + j * 0.08)).join('')
-        })
-        .join('')
-  const gold = (opacity: string, inner = '') =>
-    `<rect y="-1.5" height="${H + 2}" rx="5" fill="none" stroke="#ffd54a" stroke-width="3" filter="url(#glow)" opacity="${opacity}" style="x:${MARGIN - 1.5}px;width:calc(${bar} + 3px)">${inner}</rect>`
+    ? Array.from({ length: n }, (_, i) => `<rect y="0.5" height="${H - 1}" rx="${n > 6 ? 3 : 4}" fill="none" stroke="#8a8a8a" stroke-width="1" style="${section(i, -0.5)}">${outlineAt(finaleAt)}</rect>`).join('')
+    : `<rect y="0.5" height="${H - 1}" rx="4" fill="none" stroke="#8a8a8a" stroke-width="1" style="x:${MARGIN + 0.5}px;width:calc(${bar} - 1px)">${outlineAt(finaleAt)}</rect>`
+  // A section the move finishes blinks gold, with a few sparkles, one after another.
+  const blinking = blinks
+    .map(({ i, at }) =>
+      `<rect y="-1.5" height="${H + 2}" rx="5" fill="none" stroke="#ffd54a" stroke-width="2" filter="url(#glow)" opacity="0" style="${section(i, 1.5)}"><animate attributeName="opacity" values="0;1;0;1;0" dur="${SECTION_BLINK_S}s" begin="${at.toFixed(3)}s" fill="freeze"/></rect>`
+      + [0.2, 0.5, 0.8].map((k, j) => sparkle(along((i + k) / n), j % 2 ? -2 : H + 2, 0.6, at + 0.05 + j * 0.08)).join(''))
+    .join('')
   // The ask's end: a shine sweeps across, the gold border blinks three times and settles to a
-  // glow, and a burst of sparkles pops along the bar. Past it, only the glow stays.
-  let flourish = ''
-  if (isDone) {
-    if (finale === null || finale >= FINALE_S) {
-      flourish = gold('0.45')
-    } else {
-      const at = (s: number) => (s - finale).toFixed(3)
-      flourish = `${finale < SHINE_S ? `<rect clip-path="url(#c)" x="-10%" y="0" width="36" height="${H}" fill="url(#shine)" transform="skewX(-20)">
-  <animate attributeName="x" from="-10%" to="110%" dur="${SHINE_S}s" begin="${at(0)}s" fill="freeze"/>
-</rect>` : ''}
-${gold('0', `<animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${at(0)}s" fill="freeze"/>`)}
-${SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, 0.1 + j * 0.08 - finale)).join('\n')}`
-    }
-  }
+  // glow, and a burst of sparkles pops along the bar. The glow stays.
+  const flourish = isDone
+    ? `<rect clip-path="url(#c)" x="-10%" y="0" width="36" height="${H}" fill="url(#shine)" transform="skewX(-20)" opacity="0">
+  <animate attributeName="opacity" to="1" dur="0.01s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/>
+  <animate attributeName="x" from="-10%" to="110%" dur="${SHINE_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/>
+</rect>
+<rect y="-1.5" height="${H + 2}" rx="5" fill="none" stroke="#ffd54a" stroke-width="3" filter="url(#glow)" opacity="0" style="x:${MARGIN - 1.5}px;width:calc(${bar} + 3px)"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
+${SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n')}`
+    : ''
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
 <defs>
 <linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="${MARGIN}" x2="100%" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 <path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
-<clipPath id="c"><rect y="0" height="${H}" rx="4" style="x:${MARGIN}px;width:calc${bar}"/></clipPath>${cut}
+<clipPath id="c"><rect y="0" height="${H}" rx="4" style="x:${MARGIN}px;width:calc${bar}"/></clipPath>${cut}${reveal}
 <filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
 </defs>
 <g transform="translate(0 ${PAD})">
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
-${blinks}
+${blinking}
 ${flourish}
 </g>
 </svg>`
 }
 
-/** Where an ease from `from` to `to` is, `elapsed` seconds in. */
-function onCurve(from: number, to: number, elapsed: number): number {
-  return from + (to - from) * eased(elapsed / RAMP_S)
-}
-
-/**
- * Seconds into an ease that the band takes one fresh drawing. The app re-creates the image now and
- * then on its own, which replays the drawing from where it started, so each is handed over already
- * as far in as the time gone by. A swap costs a frame or two, so there is just the one, then the
- * drawing with no animation in it once the fill is at rest.
- */
-const SWAP_S = 0.28
-
-/** Seconds a drawing takes to reach the screen: each is drawn this far ahead so it lands in step. */
-const LEAD_S = 0.06
-/**
- * Further seconds the first drawing of an ease takes to show, handed over as the app adds the
- * message that moved it: drawn that much further ahead too. Measured from a recording.
- */
-const FIRST_LAG_S = 0.03
-/** Seconds the fill rests at its end, frozen there, before the still drawing replaces it. */
-const SETTLE_S = 0.05
-
-// The ease the bar is on: from `from` to `to` (fractions of the bar), starting at `at` (ms).
-// `doneAt` is when the fill reaches the end on the model's [D100%], which starts the finale.
-type Sweep = { from: number; to: number; at: number; isDone: boolean; doneAt: number | null }
-let last: Sweep | null = null
-let frameDue = false
+// The bar's last state: the fill eased to `to` (a fraction of the bar) from `from`, cut into `n`
+// sections, with the ask done or not. The next estimate's drawing eases on from `to`.
+type State = { from: number; to: number; isDone: boolean; n: number }
+let last: State | null = null
 
 // Tool calls since the model's last estimate, and whether this lapse has had its reminder.
 let untagged = 0
 let reminded = false
+
+// The task list's items' statuses, kept so a plan update that names no items can be applied.
+let statuses: string[] = []
 
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
   last = null
   untagged = 0
   reminded = false
+  statuses = []
 }
 
-/** How far ahead of the clock a drawing made `elapsed` seconds into an ease is drawn. */
-function leadAt(elapsed: number): number {
-  return LEAD_S + (elapsed < SWAP_S ? FIRST_LAG_S : 0)
+/** The list's statuses after one of the desktop app's plan updates. */
+export function applyPlan(before: readonly string[], e: { items?: unknown; advance?: unknown; done?: unknown; start?: unknown }): string[] {
+  if (Array.isArray(e.items)) {
+    return e.items.map(item => (item && typeof item === 'object' && typeof (item as { status?: unknown }).status === 'string' ? (item as { status: string }).status : 'pending'))
+  }
+  const after = [...before]
+  if (Array.isArray(e.done)) for (const i of e.done) if (typeof i === 'number' && after[i - 1] !== undefined) after[i - 1] = 'completed'
+  if (typeof e.start === 'number' && after[e.start - 1] !== undefined) after[e.start - 1] = 'in_progress'
+  if (e.advance === true) {
+    const current = after.indexOf('in_progress')
+    if (current !== -1) after[current] = 'completed'
+    const following = after.indexOf('pending')
+    if (following !== -1) after[following] = 'in_progress'
+  }
+  return after
 }
 
 /**
- * The drawing of the bar for `percent` at `now` (ms), and in how many ms the band should take
- * another (null: it is at rest and drawn still). A new estimate eases on from wherever the fill
- * shows now, never back.
+ * The drawing of the bar for `percent`: the same string for as long as nothing has changed, so the
+ * band keeps the drawing it has (and whatever is playing in it plays on); a new estimate is a new
+ * drawing that eases the fill on from the last one. A change to the list alone redraws the bar
+ * where it is.
  */
-export function draw(percent: number, isDone: boolean, now: number, n = 1): { source: string; wakeIn: number | null } {
+export function draw(percent: number, isDone: boolean, n = 1): string {
   const to = percent / 100
-  if (last === null || last.to !== to || last.isDone !== isDone) {
-    // Where the last drawing shows the fill: drawn ahead, so from there, not from behind it.
-    const was = last === null ? 0 : (now - last.at) / 1000
-    const from = last === null ? 0 : Math.min(to, onCurve(last.from, last.to, Math.min(RAMP_S, was + leadAt(was))))
-    last = { from, to, at: now, isDone, doneAt: isDone ? now + RAMP_S * 1000 : null }
+  if (last === null || last.to !== to || last.isDone !== isDone || last.n !== n) {
+    const from = last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
+    last = { from, to, isDone, n }
   }
-  const elapsed = (now - last.at) / 1000
-  const finale = last.doneAt === null ? null : (now - last.doneAt) / 1000
-  // At rest once the fill has arrived and the last section has blinked (or the finale played).
-  const blinked = blinkTimes(last.from, last.to, n, last.isDone).reduce((end, { at }) => Math.max(end, at + SECTION_BLINK_S + SPARKLE_S), 0)
-  const restAt = Math.max(blinked, last.doneAt !== null ? (last.doneAt - last.at) / 1000 + FINALE_S : RAMP_S + SETTLE_S)
-  if (elapsed >= restAt) {
-    return { source: battery(last.to, last.to, Infinity, last.isDone, null, n), wakeIn: null }
-  }
-  const lead = leadAt(elapsed)
-  const source = battery(last.from, last.to, elapsed + lead, last.isDone, finale === null ? null : finale + lead, n)
-  // The next swap: partway, then at rest.
-  return { source, wakeIn: ((elapsed < SWAP_S ? SWAP_S : restAt) - elapsed) * 1000 }
+  return battery(last.from, last.to, last.isDone, n)
 }
 
 export const register: Register = on => {
@@ -307,7 +278,7 @@ export const register: Register = on => {
       const { phase } = await read($, progress)
       if (phase !== 'working') {
         await update($, progress, (): Progress => ({ percent: null, phase: 'working' }))
-        await update($, steps, () => 0)
+        await update($, steps, (): Steps => ({ total: 0, done: 0 }))
         startAsk()
       }
     }
@@ -323,9 +294,10 @@ export const register: Register = on => {
       if (percent !== null) {
         untagged = 0
         reminded = false
+        const list = await read($, steps)
         await update($, progress, (p): Progress => {
           // A tag after the ask ended (a continuation turn) carries on from where it was.
-          const shown = settle(p.phase === 'idle' ? null : p.percent, percent)
+          const shown = settle(p.phase === 'idle' ? null : p.percent, percent >= 100 ? 100 : place(percent, list))
           return { percent: shown, phase: shown >= 100 ? 'done' : 'working' }
         })
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
@@ -368,16 +340,15 @@ export const register: Register = on => {
     return { ...result, context: [...(result.context ?? []), REMINDER] }
   }).catch(($, e, next) => next(e))
 
-  // The task list sets how many sections the bar has; only its length counts, never its progress.
   on('tool.call', { tool: 'mcp__ccd_turn__update_plan' }, async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined && Array.isArray(e.items)) await update($, steps, () => e.items.length)
+    if (e.agentId === undefined) await listed($, applyPlan(statuses, e))
     return result
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined && Array.isArray(e.todos)) await update($, steps, () => e.todos.length)
+    if (e.agentId === undefined && Array.isArray(e.todos)) await listed($, applyPlan([], { items: e.todos }))
     return result
   }).catch(($, e, next) => next(e))
 
@@ -397,6 +368,13 @@ export const register: Register = on => {
     }
   })
 
+  // The tags are for the bar, not the reader: a reply is drawn without them. The stored row loses
+  // them in session.append; this is the live drawing, which the surface makes before that.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const text = stripTags(e.props.text)
+    return text === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text } })
+  })
+
   // A terminal keeps its own hint line under the prompt (its pills stay live) with a block bar
   // added at the end.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
@@ -414,7 +392,20 @@ export const register: Register = on => {
 
 let lastError = ''
 
-
+/**
+ * The task list cuts the bar into sections and fills a finished step's; the step in progress is
+ * the model's estimate's to fill.
+ */
+async function listed($: EngineInterface, next: string[]) {
+  statuses = next
+  const list = tally(statuses)
+  await update($, steps, () => list)
+  await update($, progress, (p): Progress => {
+    if (p.phase !== 'working' || list.total < 1 || list.done < 1) return p
+    const shown = settle(p.percent, place(0, list))
+    return { percent: shown, phase: shown >= 100 ? 'done' : 'working' }
+  })
+}
 
 /** The bar in the band above the prompt, or the engine's own band when there's nothing to show. */
 async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next: (e: RenderInput<'AbovePrompt'>) => Promise<RenderElement>) {
@@ -424,19 +415,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     return next(e)
   }
   const { Box } = ui
-  await read($, tick)
-  const now = await $.clock.now()
-  const { source, wakeIn } = draw(bar.percent, bar.isDone, now, Math.max(1, await read($, steps)))
-  // While the bar moves, the band takes a fresh drawing at the next swap.
-  if (wakeIn !== null && !frameDue) {
-    frameDue = true
-    void $.clock.sleep(wakeIn + 20).then(async () => {
-      frameDue = false
-      await update($, tick, n => n + 1)
-    }).catch(() => {
-      frameDue = false
-    })
-  }
+  const source = draw(bar.percent, bar.isDone, Math.max(1, (await read($, steps)).total))
   return (
     <Box flexGrow={1}>
       <ui.Svg
@@ -446,7 +425,10 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
         // band is held to the band's width, and the drawing lays out inside it at 100%.
         width={4000}
         height={H + 2 * PAD}
-        // An image, not a frame: a frame reloads on every new source and blanks for a moment.
+        // A frame, not an image: the app re-decodes an image whenever it redraws the band, which
+        // replays any animation in it from the start, where a frame plays once from when it's
+        // mounted and is only mounted again on a new source (which blanks it for a moment).
+        isInteractive
       />
     </Box>
   )

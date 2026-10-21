@@ -6,8 +6,14 @@ export type Progress = {
   phase: Phase
 }
 
+export type Steps = {
+  /** The task list's steps, and how many of them are done; no list is 0 steps. */
+  total: number
+  done: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'progress-bar': { progress: Progress; steps: number; tick: number }
+    'progress-bar': { progress: Progress; steps: Steps }
   }
 }
