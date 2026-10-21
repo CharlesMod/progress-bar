@@ -5,15 +5,24 @@ import type { Engine } from 'claude-code/testing'
 import { lastPercent, stripTags } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
+const BAND_PROPS = {
+  hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 9 }, view: {},
+}
+const BAND = { component: 'AbovePrompt', props: BAND_PROPS } as const
+const SURVEY = { component: 'AbovePrompt', props: { ...BAND_PROPS, hasSurvey: true } } as const
 const SURFACES = ['terminal', 'desktop'] as const
 
-/** Stands in for the engine beneath the plugin: its turns and the hint line under the prompt. */
+/** Stands in for the engine beneath the plugin: its turns, the hint line under the prompt and the band above it. */
 function engine(on: On) {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('ui.render', { component: 'PromptHint' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>{e.props.hint + (e.props.tail ?? '')}</Text>
+  })
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>{e.props.hasSurvey ? 'survey' : 'empty band'}</Text>
   })
 }
 
@@ -26,9 +35,9 @@ function say($: Engine, text: string, uuid: string) {
   })
 }
 
-/** The bar's label as drawn under the prompt, or undefined when the engine's own line shows alone. */
+/** The bar's label as drawn (the terminal's hint line, the desktop's band), or undefined when the engine's own shows alone. */
 async function label($: Engine, surface: (typeof SURFACES)[number]) {
-  const ui = await $.ui.mount({ plugin: 'progress-bar', surface, ...HINT })
+  const ui = await $.ui.mount({ plugin: 'progress-bar', surface, ...(surface === 'terminal' ? HINT : BAND) })
   const text = (await ui.find({ type: 'Text', text: /%/ }))?.text
   await ui.unmount()
   return text?.match(/\d+(?:\.\d+)?%(?: · stopped)?$/)?.[0]
@@ -74,6 +83,34 @@ test('the terminal keeps its own hint line with the bar at the end', async ($, o
   await say($, 'Started. [D50%]', 'a1')
   const ui = await $.ui.mount({ plugin: 'progress-bar', surface: 'terminal', ...HINT })
   expect((await ui.find({ type: 'Text', text: /%/ }))?.text).toBe('esc to interrupt  ████████░░░░░░░░ 50%')
+  await ui.unmount()
+})
+
+test('the desktop draws the battery in the band, leaving the hint line and the terminal band alone', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D50%]', 'a1')
+
+  const band = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Svg' })).toBeDefined()
+  await band.unmount()
+
+  const hint = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...HINT })
+  expect((await hint.find({ type: 'Text' }))?.text).toBe('esc to interrupt')
+  await hint.unmount()
+
+  const terminalBand = await $.ui.mount({ plugin: 'progress-bar', surface: 'terminal', ...BAND })
+  expect((await terminalBand.find({ type: 'Text' }))?.text).toBe('empty band')
+  await terminalBand.unmount()
+})
+
+test('a survey has the desktop band to itself', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D50%]', 'a1')
+  const ui = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...SURVEY })
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  expect((await ui.find({ type: 'Text' }))?.text).toBe('survey')
   await ui.unmount()
 })
 

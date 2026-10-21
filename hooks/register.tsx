@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Progress } from '../types'
 
@@ -163,38 +163,54 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The line under the prompt. The desktop gets the drawn battery, centered; a terminal keeps
-  // its own hint line (its pills stay live) with a block bar added at the end.
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const { percent, phase } = await read($, progress)
-    if (phase === 'idle' || (phase === 'working' && percent === null)) {
+  // The app surfaces draw the battery, centered, in the band above the prompt: the desktop
+  // app doesn't raise PromptHint. A survey has the band to itself.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const bar = await shown($)
+    const ui = $.ui.resolve(e)
+    if (bar === null || e.surface === 'terminal' || e.props.hasSurvey || !('Svg' in ui)) {
       return next(e)
     }
-    const shown = percent ?? 0
-    const isDone = phase === 'done'
-    const label = phase === 'stopped' ? `${format(shown)} · stopped` : format(shown)
-    const ui = $.ui.resolve(e)
+    const { Box, Text } = ui
+    return (
+      <Box flexDirection="row" flexGrow={1} justifyContent="center" alignItems="center" gap={1}>
+        <ui.Svg
+          source={battery(bar.percent, bar.isDone)}
+          alt={`Progress on the current request: ${bar.label}`}
+          width={W + 2 * PAD}
+          height={H + 2 * PAD}
+          isInteractive={bar.isDone}
+        />
+        <Text dimColor>{bar.label}</Text>
+      </Box>
+    )
+  })
 
-    // The terminal's element table names Svg too, but only the app surfaces draw it.
-    if (e.surface !== 'terminal' && 'Svg' in ui) {
-      const { Box, Text } = ui
-      return (
-        <Box flexDirection="row" flexGrow={1} justifyContent="center" alignItems="center" gap={1}>
-          <ui.Svg
-            source={battery(shown, isDone)}
-            alt={`Progress on the current request: ${label}`}
-            width={W + 2 * PAD}
-            height={H + 2 * PAD}
-            isInteractive={isDone}
-          />
-          <Text dimColor>{label}</Text>
-        </Box>
-      )
+  // A terminal keeps its own hint line under the prompt (its pills stay live) with a block bar
+  // added at the end.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const bar = await shown($)
+    if (bar === null || e.surface !== 'terminal') {
+      return next(e)
     }
     // Eighth-block characters so the terminal bar moves smoothly.
     const cells = 16
-    const eighths = Math.round((cells * 8 * shown) / 100)
+    const eighths = Math.round((cells * 8 * bar.percent) / 100)
     const filled = '█'.repeat(Math.floor(eighths / 8)) + (eighths % 8 ? '▏▎▍▌▋▊▉'[(eighths % 8) - 1] : '')
-    return next({ ...e, props: { ...e.props, tail: `  ${filled}${'░'.repeat(cells - filled.length)} ${label}` } })
+    return next({ ...e, props: { ...e.props, tail: `  ${filled}${'░'.repeat(cells - filled.length)} ${bar.label}` } })
   })
+}
+
+/** What the bar shows now, or null while there's no estimate to show. */
+async function shown($: EngineInterface) {
+  const { percent, phase } = await read($, progress)
+  if (phase === 'idle' || (phase === 'working' && percent === null)) {
+    return null
+  }
+  const value = percent ?? 0
+  return {
+    percent: value,
+    isDone: phase === 'done',
+    label: phase === 'stopped' ? `${format(value)} · stopped` : format(value),
+  }
 }
