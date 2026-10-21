@@ -2,18 +2,18 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { lastPercent } from './register'
+import { lastPercent, stripTags } from './register'
 
-const MODE = { component: 'SessionMode', props: { modes: [] } } as const
+const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const SURFACES = ['terminal', 'desktop'] as const
 
-/** Stands in for the engine beneath the plugin: its turns and its footer labels. */
+/** Stands in for the engine beneath the plugin: its turns and the hint line under the prompt. */
 function engine(on: On) {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('ui.render', { component: 'SessionMode' }, ($, e) => {
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
-    return <Text dimColor>{e.props.modes.join(' & ')}</Text>
+    return <Text dimColor>{e.props.hint + (e.props.tail ?? '')}</Text>
   })
 }
 
@@ -26,11 +26,12 @@ function say($: Engine, text: string, uuid: string) {
   })
 }
 
+/** The bar's label as drawn under the prompt, or undefined when the engine's own line shows alone. */
 async function label($: Engine, surface: (typeof SURFACES)[number]) {
-  const ui = await $.ui.mount({ plugin: 'progress-bar', surface, ...MODE })
+  const ui = await $.ui.mount({ plugin: 'progress-bar', surface, ...HINT })
   const text = (await ui.find({ type: 'Text', text: /%/ }))?.text
   await ui.unmount()
-  return text
+  return text?.match(/\d+(?:\.\d+)?%(?: · stopped)?$/)?.[0]
 }
 
 test('reads the last tag, with or without the D, clamped', () => {
@@ -38,6 +39,12 @@ test('reads the last tag, with or without the D, clamped', () => {
   expect(lastPercent(['went back [ 12.5 %]'])).toBe(12.5)
   expect(lastPercent(['overshoot [D140%]'])).toBe(100)
   expect(lastPercent(['no tag here', '[x%]'])).toBe(null)
+})
+
+test('strips tags and the space before them', () => {
+  expect(stripTags('Mapped the code. [D42.5%]')).toBe('Mapped the code.')
+  expect(stripTags('Halfway [D50%] and going.')).toBe('Halfway and going.')
+  expect(stripTags('[D100%]')).toBe('')
 })
 
 test('follows the estimate up and down, then fills on the final answer', async ($, on) => {
@@ -59,6 +66,25 @@ test('follows the estimate up and down, then fills on the final answer', async (
     })
     expect(await label($, surface)).toBe('100%')
   }
+})
+
+test('the terminal keeps its own hint line with the bar at the end', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D50%]', 'a1')
+  const ui = await $.ui.mount({ plugin: 'progress-bar', surface: 'terminal', ...HINT })
+  expect((await ui.find({ type: 'Text', text: /%/ }))?.text).toBe('esc to interrupt  ████████░░░░░░░░ 50%')
+  await ui.unmount()
+})
+
+test('the stored message carries no tag, unless it was nothing but one', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const stored = await say($, 'Mapped the code. [D42.5%]', 'a1')
+  expect(stored.message?.content).toMatchObject([{ type: 'text', text: 'Mapped the code.' }])
+  const bare = await say($, '[D60%]', 'a2')
+  expect(bare.message?.content).toMatchObject([{ type: 'text', text: '[D60%]' }])
+  expect(await label($, 'desktop')).toBe('60%')
 })
 
 test('an interrupted ask keeps its last estimate, marked stopped', async ($, on) => {
