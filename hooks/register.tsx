@@ -29,6 +29,11 @@ The person tracks your progress on their latest request with a progress bar. Eac
 - When you finish, end your final message with [D100%]. Leave the tag out of replies to quick questions that take no work.
 - The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
 
+// After this many tool calls in a row with no estimate, the next result carries a reminder.
+const REMIND_AFTER = 3
+
+const REMINDER = `The progress bar has had no estimate for the last ${REMIND_AFTER} tool calls. Include a tag like [D40%] in your next update to the person, with your estimate for the whole request.`
+
 /** The last progress tag in a message's text blocks, clamped to 0-100. */
 export function lastPercent(texts: readonly string[]): number | null {
   let found: number | null = null
@@ -244,9 +249,15 @@ type Sweep = { from: number; to: number; at: number; isDone: boolean; doneAt: nu
 let last: Sweep | null = null
 let frameDue = false
 
+// Tool calls since the model's last estimate, and whether this lapse has had its reminder.
+let untagged = 0
+let reminded = false
+
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
   last = null
+  untagged = 0
+  reminded = false
 }
 
 /** How far ahead of the clock a drawing made `elapsed` seconds into an ease is drawn. */
@@ -310,6 +321,8 @@ export const register: Register = on => {
       )
       const percent = lastPercent(texts)
       if (percent !== null) {
+        untagged = 0
+        reminded = false
         await update($, progress, (p): Progress => {
           // A tag after the ask ended (a continuation turn) carries on from where it was.
           const shown = settle(p.phase === 'idle' ? null : p.percent, percent)
@@ -342,6 +355,18 @@ export const register: Register = on => {
     }
     return next(e)
   })
+
+  // Tool calls that go by with no estimate get one reminder, attached to the third one's result
+  // for the model alone; it says nothing again until the model has tagged.
+  on('tool.call', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId !== undefined || 'deny' in result && result.deny !== undefined) return result
+    if ((await read($, progress)).phase !== 'working') return result
+    untagged += 1
+    if (untagged < REMIND_AFTER || reminded) return result
+    reminded = true
+    return { ...result, context: [...(result.context ?? []), REMINDER] }
+  }).catch(($, e, next) => next(e))
 
   // The task list sets how many sections the bar has; only its length counts, never its progress.
   on('tool.call', { tool: 'mcp__ccd_turn__update_plan' }, async ($, e, next) => {

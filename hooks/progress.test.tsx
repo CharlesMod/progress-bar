@@ -277,3 +277,26 @@ test('sections finished in one sweep blink one after another', () => {
   // A slow-enough sweep needs no waiting; a finished ask leaves the last section to the finale.
   expect(blinkTimes(0, 1, 4, true).map(b => b.i)).toEqual([0, 1, 2])
 })
+
+test('three tool calls in a row with no estimate get one reminder, and a tag starts the count again', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D10%]', 'a1')
+  expect(await call()).toEqual([])
+  expect(await call()).toEqual([])
+  const third = await call()
+  expect(third.length).toBe(1)
+  expect(third[0]).toContain('[D40%]')
+  // Once per lapse: the fourth says nothing.
+  expect(await call()).toEqual([])
+  // A tag starts the count again.
+  await say($, 'More. [D30%]', 'a2')
+  expect(await call()).toEqual([])
+  expect(await call()).toEqual([])
+  expect((await call()).length).toBe(1)
+  // Not between asks.
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
+  for (let i = 0; i < 4; i++) expect(await call()).toEqual([])
+})
