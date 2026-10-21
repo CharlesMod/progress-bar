@@ -322,3 +322,25 @@ test('three tool calls in a row with no estimate get one reminder, and a tag sta
   await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
   for (let i = 0; i < 4; i++) expect(await call()).toEqual([])
 })
+
+test('with a Remote Control client attached, the bar is pinned as the status line too', async ($, on) => {
+  engine(on)
+  let surfaces: ('desktop' | 'mobile')[] = ['desktop']
+  const status: (string | undefined)[] = []
+  on('session.surfaces', () => ({ value: surfaces }))
+  on('ui.status', (_, e) => {
+    status.push(e.text)
+    return { value: undefined }
+  })
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D50%]', 'a1')
+  expect(status.at(-1)).toBeUndefined()
+
+  surfaces = ['desktop', 'mobile']
+  await say($, 'Further. [D75%]', 'a2')
+  expect(status.at(-1)).toBe('████████████░░░░ 75%')
+
+  surfaces = ['desktop']
+  await say($, 'Nearly. [D90%]', 'a3')
+  expect(status.at(-1)).toBeUndefined()
+})

@@ -280,6 +280,7 @@ export const register: Register = on => {
         await update($, progress, (): Progress => ({ percent: null, phase: 'working' }))
         await update($, steps, (): Steps => ({ total: 0, done: 0 }))
         startAsk()
+        await syncStatus($)
       }
     }
     return next(e)
@@ -300,6 +301,7 @@ export const register: Register = on => {
           const shown = settle(p.phase === 'idle' ? null : p.percent, percent >= 100 ? 100 : place(percent, list))
           return { percent: shown, phase: shown >= 100 ? 'done' : 'working' }
         })
+        await syncStatus($)
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
         const content = e.message.content.flatMap(block => {
           if (block.type !== 'text' || typeof block.text !== 'string') return [block]
@@ -324,9 +326,23 @@ export const register: Register = on => {
         if (p.percent === null) return { percent: null, phase: 'idle' }
         return { ...p, phase: e.reason === 'answer' ? 'done' : 'stopped' }
       })
+      await syncStatus($)
     }
     return next(e)
   })
+
+  // A Remote Control client joining or leaving changes whether the status line carries the bar.
+  on('session.attach', async ($, e, next) => {
+    const joined = await next(e)
+    await syncStatus($)
+    return joined
+  }).catch(($, e, next) => next(e))
+
+  on('session.detach', async ($, e, next) => {
+    const left = await next(e)
+    await syncStatus($)
+    return left
+  }).catch(($, e, next) => next(e))
 
   // Tool calls that go by with no estimate get one reminder, attached to the third one's result
   // for the model alone; it says nothing again until the model has tagged.
@@ -382,11 +398,7 @@ export const register: Register = on => {
     if (bar === null || e.surface !== 'terminal') {
       return next(e)
     }
-    // Eighth-block characters so the terminal bar moves smoothly.
-    const cells = 16
-    const eighths = Math.round((cells * 8 * bar.percent) / 100)
-    const filled = '█'.repeat(Math.floor(eighths / 8)) + (eighths % 8 ? '▏▎▍▌▋▊▉'[(eighths % 8) - 1] : '')
-    return next({ ...e, props: { ...e.props, tail: `  ${filled}${'░'.repeat(cells - filled.length)} ${bar.label}` } })
+    return next({ ...e, props: { ...e.props, tail: `  ${textBar(bar)}` } })
   })
 }
 
@@ -405,6 +417,7 @@ async function listed($: EngineInterface, next: string[]) {
     const shown = settle(p.percent, place(0, list))
     return { percent: shown, phase: shown >= 100 ? 'done' : 'working' }
   })
+  await syncStatus($)
 }
 
 /** The bar in the band above the prompt, or the engine's own band when there's nothing to show. */
@@ -444,5 +457,28 @@ async function shown($: EngineInterface) {
     percent,
     isDone: phase === 'done' && percent >= 100,
     label: phase === 'stopped' ? `${format(percent)} · stopped` : format(percent),
+  }
+}
+
+/** The bar as text: 16 cells filling in eighths, so it moves smoothly, then the label. */
+export function textBar(bar: { percent: number; label: string }): string {
+  const cells = 16
+  const eighths = Math.round((cells * 8 * bar.percent) / 100)
+  const filled = '█'.repeat(Math.floor(eighths / 8)) + (eighths % 8 ? '▏▎▍▌▋▊▉'[(eighths % 8) - 1] : '')
+  return `${filled}${'░'.repeat(cells - filled.length)} ${bar.label}`
+}
+
+// Only the terminal and the desktop app draw the band above the prompt and the hint line under it.
+// While another surface is attached (a phone or claude.ai over Remote Control, VS Code), the text
+// bar is also pinned as the mod's status line, which every surface draws.
+const DRAWS_BAR = new Set(['terminal', 'desktop'])
+
+async function syncStatus($: EngineInterface) {
+  try {
+    const surfaces = await $.session.surfaces()
+    const bar = surfaces.some(s => !DRAWS_BAR.has(s)) ? await shown($) : null
+    $.ui.status(bar === null ? undefined : textBar(bar))
+  } catch {
+    // Best effort: a missed status line never costs the bar or the tag stripping.
   }
 }

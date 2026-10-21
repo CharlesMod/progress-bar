@@ -29,6 +29,7 @@ Requires Claude Code 2.1.299 or newer.
 - Each new estimate eases the fill from where it was to the new estimate, in and out. The bar is drawn as one vector drawing per estimate, which plays once from the moment it appears and freezes where it ends, so nothing in it ever replays or snaps back.
 - When the session has a task list (the desktop app's plan, or TodoWrite's list), the bar is cut into one section per step. A finished step fills its section, and Claude's tag is its estimate for the step it has in progress, placed inside that step's section. A section blinks gold with a few sparkles as the fill passes its end; when one move finishes several, they blink one after another.
 - When Claude's final `[D100%]` arrives, the bar turns gold and plays a short visual "ding": a shine passes across, sparkles burst, and a gold border blinks three times. After that the border keeps a soft glow until your next request.
+- Remote Control clients (the phone app, claude.ai) and VS Code draw neither the band above the prompt nor the hint line under it. While one is attached, the same text bar is also pinned as the mod's status line, and it's removed when the client leaves.
 - In a terminal, a 16-cell block bar that fills in eighths is added to the end of the hint line under the prompt.
 
 Note: a mod's system-prompt hook does not run where an organization manages Claude Code, unless that organization lists the plugin in its managed settings.
