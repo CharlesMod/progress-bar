@@ -20,7 +20,7 @@ const INSTRUCTIONS = `# Progress estimate
 
 The person tracks your progress on their latest request with a progress bar. Each time you write text to them while working on it (a status update between tool calls, a note on what you found or will do next), include your honest estimate of how complete the work is, as a tag like [D20.9%], anywhere in that text.
 
-- While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. Finishing a step fills its section. With no list, the tag is your estimate for the whole request.
+- While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. A section fills only when its step is checked off, and a message that checks off a step tags the step it starts. With no list, the tag is your estimate for the whole request.
 - The bar only moves forward: a lower estimate than an earlier one leaves it where it is, so don't overshoot early.
 - When you finish, end your final message with [D100%]. Leave the tag out of replies to quick questions that take no work.
 - The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
@@ -51,13 +51,18 @@ export function settle(shown: number | null, stated: number): number {
   return shown === null ? stated : Math.max(shown, stated)
 }
 
+// How far into its section an estimate fills a step that isn't checked off: a full section always
+// means a checked-off step.
+const STEP_CAP = 90
+
 /**
  * Where on the whole bar (0-100) an estimate puts it: with a task list, that far into the step in
- * progress, after the steps done; with none, the estimate itself.
+ * progress (short of its end), after the steps done; with none, the estimate itself.
  */
 export function place(stated: number, { total, done }: Steps): number {
   if (total < 1) return stated
-  return Math.min(100, ((Math.min(done, total) + stated / 100) / total) * 100)
+  if (done >= total) return 100
+  return ((done + Math.min(stated, STEP_CAP) / 100) / total) * 100
 }
 
 /** A list's steps and how many are done, from its items' statuses. */
@@ -223,12 +228,22 @@ let reminded = false
 // The task list's items' statuses, kept so a plan update that names no items can be applied.
 let statuses: string[] = []
 
+// The model's highest estimate for the step in progress (for the whole ask, with no list); the
+// highest tag in its current response, which a check-off later in that response carries to the
+// step it starts; and whether its last tag was [D100%].
+let estimate: number | null = null
+let fresh: number | null = null
+let finishing = false
+
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
   last = null
   untagged = 0
   reminded = false
   statuses = []
+  estimate = null
+  fresh = null
+  finishing = false
 }
 
 /** The list's statuses after one of the desktop app's plan updates. */
@@ -295,13 +310,10 @@ export const register: Register = on => {
       if (percent !== null) {
         untagged = 0
         reminded = false
-        const list = await read($, steps)
-        await update($, progress, (p): Progress => {
-          // A tag after the ask ended (a continuation turn) carries on from where it was.
-          const shown = settle(p.phase === 'idle' ? null : p.percent, percent >= 100 ? 100 : place(percent, list))
-          return { percent: shown, phase: shown >= 100 ? 'done' : 'working' }
-        })
-        await syncStatus($)
+        estimate = settle(estimate, percent)
+        fresh = settle(fresh, percent)
+        finishing = percent >= 100
+        await redraw($, true)
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
         const content = e.message.content.flatMap(block => {
           if (block.type !== 'text' || typeof block.text !== 'string') return [block]
@@ -317,13 +329,20 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The turn's end doesn't move the bar: it only marks the ask as no longer working, so the
-  // next typed ask starts afresh.
+  // Each model response starts with no tag of its own.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) fresh = null
+    return yield* next(e)
+  })
+
+  // The turn's end only marks the ask as no longer working, so the next typed ask starts afresh;
+  // an answer that ended on [D100%] with steps still unchecked fills the bar then.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       await update($, progress, (p): Progress => {
         if (p.phase !== 'working') return p
         if (p.percent === null) return { percent: null, phase: 'idle' }
+        if (e.reason === 'answer' && finishing) return { percent: 100, phase: 'done' }
         return { ...p, phase: e.reason === 'answer' ? 'done' : 'stopped' }
       })
       await syncStatus($)
@@ -368,6 +387,13 @@ export const register: Register = on => {
     return result
   }).catch(($, e, next) => next(e))
 
+  // The desktop app's wrap-up checks off the whole list.
+  on('tool.call', { tool: 'mcp__ccd_turn__wrap_up' }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && statuses.length > 0) await listed($, statuses.map(() => 'completed'))
+    return result
+  }).catch(($, e, next) => next(e))
+
   // The app surfaces draw the bar across the band above the prompt: the desktop app doesn't
   // raise PromptHint. A survey has the band to itself.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -405,17 +431,34 @@ export const register: Register = on => {
 let lastError = ''
 
 /**
- * The task list cuts the bar into sections and fills a finished step's; the step in progress is
- * the model's estimate's to fill.
+ * The task list cuts the bar into sections and fills a finished step's, as it is checked off; the
+ * step in progress is the model's estimate's to fill. A step that starts begins empty, unless the
+ * response that started it tagged it.
  */
 async function listed($: EngineInterface, next: string[]) {
+  const before = tally(statuses)
+  const after = tally(next)
+  if (next.indexOf('in_progress') !== statuses.indexOf('in_progress') || after.done !== before.done || after.total !== before.total) {
+    estimate = fresh !== null && fresh < 100 ? fresh : null
+  }
   statuses = next
+  await redraw($, false)
+}
+
+/**
+ * Puts the bar where the list and the estimate say: with a list, the checked-off steps' sections
+ * full and the estimate's share of the step in progress, so a new plan resets it to match; with
+ * none, the estimate for the whole ask, only ever forward. A list change alone moves a bar that is
+ * working; a tag moves any, a continuation's carrying on from where it was.
+ */
+async function redraw($: EngineInterface, tagged: boolean) {
   const list = tally(statuses)
   await update($, steps, () => list)
   await update($, progress, (p): Progress => {
-    if (p.phase !== 'working' || list.total < 1 || list.done < 1) return p
-    const shown = settle(p.percent, place(0, list))
-    return { percent: shown, phase: shown >= 100 ? 'done' : 'working' }
+    if (!tagged && p.phase !== 'working') return p
+    if (p.percent === null && estimate === null && list.done < 1) return p
+    const at = list.total > 0 ? place(estimate ?? 0, list) : settle(p.phase === 'idle' ? null : p.percent, estimate ?? 0)
+    return { percent: at, phase: at >= 100 ? 'done' : 'working' }
   })
   await syncStatus($)
 }

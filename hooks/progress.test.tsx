@@ -16,6 +16,9 @@ const SURFACES = ['terminal', 'desktop'] as const
 function engine(on: On) {
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('turn.step', async function* ($, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
   on('ui.render', { component: 'PromptHint' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>{e.props.hint + (e.props.tail ?? '')}</Text>
@@ -33,6 +36,11 @@ function say($: Engine, text: string, uuid: string) {
     origin: { kind: 'model', model: 'claude-opus-5-5' },
     uuid,
   })
+}
+
+/** The model starts a new response, with no tag of its own yet. */
+async function respond($: Engine, index: number) {
+  for await (const _ of $.turn.step({ turnId: 't1', index, model: 'claude-opus-5-5', messageCount: 0 }));
 }
 
 /** The bar's label as drawn (the terminal's hint line, the desktop's band), or undefined when the engine's own shows alone. */
@@ -166,7 +174,7 @@ test('an estimate moves the bar forward or not at all', () => {
   expect(settle(40, 55)).toBe(55)
 })
 
-test('tool calls and a list with nothing done leave the bar alone', async ($, on) => {
+test('tool calls and a list with nothing done leave the bar alone, and the wrap-up checks it all off', async ($, on) => {
   engine(on)
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
@@ -175,8 +183,9 @@ test('tool calls and a list with nothing done leave the bar alone', async ($, on
   expect(await label($, 'desktop')).toBeUndefined()
   await say($, 'Started. [D20%]', 'a1')
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' })
   expect(await label($, 'desktop')).toBe('20%')
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' })
+  expect(await label($, 'desktop')).toBe('100%')
 })
 
 test('with a task list the tag is the step in progress, and a finished step fills its section', async ($, on) => {
@@ -185,6 +194,9 @@ test('with a task list the tag is the step in progress, and a finished step fill
   // Five steps, the second in progress: [D75%] is three quarters of the second section.
   expect(place(75, { total: 5, done: 1 })).toBe(35)
   expect(place(75, { total: 0, done: 0 })).toBe(75)
+  // An unchecked step never fills its section; a checked-off list fills the bar.
+  expect(place(100, { total: 4, done: 1 })).toBe(47.5)
+  expect(place(0, { total: 4, done: 4 })).toBe(100)
   expect(tally(['completed', 'in_progress', 'pending'])).toEqual({ total: 3, done: 1 })
   expect(applyPlan(['completed', 'in_progress', 'pending'], { advance: true })).toEqual(['completed', 'completed', 'in_progress'])
   expect(applyPlan(['in_progress', 'pending', 'pending', 'pending'], { done: [2], start: 4 })).toEqual(['in_progress', 'completed', 'pending', 'in_progress'])
@@ -192,19 +204,49 @@ test('with a task list the tag is the step in progress, and a finished step fill
   await $.turn.start({ text: 'job', turnId: 't1' })
   const items = ['a', 'b', 'c', 'd'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  await respond($, 1)
   await say($, 'Halfway through the first step. [D50%]', 'a1')
   expect(await label($, 'desktop')).toBe('12.5%')
-  // Finishing the step fills its section; the next tag is for the second step.
+  // Checking off the step fills its section, and the second starts empty.
+  await respond($, 2)
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
   expect(await label($, 'desktop')).toBe('25%')
   await say($, 'Second step, nearly. [D80%]', 'a2')
   expect(await label($, 'desktop')).toBe('45%')
-  // A lower estimate for the step holds, and so does one that lands behind the bar.
+  // A lower estimate for the step holds.
   await say($, 'Hmm. [D20%]', 'a3')
   expect(await label($, 'desktop')).toBe('45%')
-  // The final tag fills the bar whatever the list says.
+  // [D100%] with steps unchecked stops short of the step's end, and fills the bar once the turn answers.
+  await respond($, 3)
   await say($, 'Done. [D100%]', 'a4')
+  expect(await label($, 'desktop')).toBe('47.5%')
+  await $.turn.complete({ reason: 'answer', answer: 'Done.', durationMs: 1, isAborted: false, turnId: 't1' })
   expect(await label($, 'desktop')).toBe('100%')
+})
+
+test('a tag in the response that checks off a step is for the step it starts', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const items = ['a', 'b', 'c', 'd'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
+  await respond($, 0)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  await say($, 'First step, most of the way. [D80%]', 'a1')
+  expect(await label($, 'desktop')).toBe('20%')
+  // One response: the text comes before its check-off, and its 30% goes to the second step.
+  await respond($, 1)
+  await say($, 'First step done; into the second. [D30%]', 'a2')
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
+  expect(await label($, 'desktop')).toBe('32.5%')
+  // A check-off in a response with no tag starts its step empty.
+  await respond($, 2)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
+  expect(await label($, 'desktop')).toBe('50%')
+  // A new plan puts the bar back in line with it, even behind where it was.
+  await respond($, 3)
+  const replanned = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((content, i) => ({ content, status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: replanned })
+  expect(await label($, 'desktop')).toBe('25%')
 })
 
 test('a message sent mid-ask keeps the bar where it was', async ($, on) => {
@@ -262,23 +304,24 @@ test('the task list cuts the bar into sections, which only the model fills, each
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Started. [D10%]', 'a1')
   expect((await source($))!).not.toContain('id="sec"')
-  // A four-step list with the first step in progress: four sections, and the fill doesn't move.
+  // A four-step list with the first step in progress: four sections, and the 10% is the first step's.
   const items = ['a', 'b', 'c', 'd'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
   let svg = (await source($))!
   expect(svg.match(/<clipPath id="sec">(.*?)<\/clipPath>/)![1].match(/<rect /g)!.length).toBe(4)
-  expect(moveOf(svg)).toEqual([0.1, 0.1])
+  expect(moveOf(svg)).toEqual([0.025, 0.025])
   expect(svg).not.toContain('<animate')
-  expect(await label($, 'desktop')).toBe('10%')
+  expect(await label($, 'desktop')).toBe('2.5%')
   // Finishing the first step, then an estimate for the second: the fill crosses the first
   // section's end, and that section blinks, once, as it passes.
+  await respond($, 1)
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
   await say($, 'Into step two. [D60%]', 'a2')
   svg = (await source($))!
   const blinks = [...svg.matchAll(/values="0;1;0;1;0" dur="0.6s" begin="([\d.-]+)s"/g)].map(m => Number(m[1]))
   expect(blinks.length).toBe(1)
-  expect(blinks[0]! > 0 && blinks[0]! < fillSeconds(0.1, 0.4)).toBe(true)
-  expect(moveOf(svg)).toEqual([0.1, 0.4])
+  expect(blinks[0]! > 0 && blinks[0]! < fillSeconds(0.025, 0.4)).toBe(true)
+  expect(moveOf(svg)).toEqual([0.025, 0.4])
   // A new ask starts with one section again.
   await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
   await $.turn.start({ text: 'next', turnId: 't2' })
