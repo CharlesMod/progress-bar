@@ -148,16 +148,17 @@ const SECTION_BLINK_S = 0.6
  * When (seconds into the drawing) each section the move from `from` to `to` finishes blinks: as
  * the fill passes its end, but never before the section before it has finished blinking, so
  * finishing several reads as one blink after another. The last section's blink is the finale's
- * when the ask is done.
+ * when the ask is done. `from` and `to` are places on the bar, whose sections end at `edges`; the
+ * fill starts `delay` seconds into the drawing.
  */
-export function blinkTimes(from: number, to: number, n: number, isDone: boolean): { i: number; at: number }[] {
+export function blinkTimes(from: number, to: number, n: number, isDone: boolean, edges = layout(n, n), delay = 0): { i: number; at: number }[] {
   if (n < 2 || to - from < 0.0005) return []
   const seconds = fillSeconds(from, to)
   const times: { i: number; at: number }[] = []
   for (let i = 0; i < n - (isDone ? 1 : 0); i++) {
-    const end = (i + 1) / n
+    const end = edges[i + 1]!
     if (from < end - 0.0005 && end <= to + 0.0005) {
-      const arrival = seconds * easeTime((end - from) / (to - from))
+      const arrival = delay + seconds * easeTime((end - from) / (to - from))
       const previous = times.length === 0 ? -Infinity : times[times.length - 1]!.at + SECTION_BLINK_S
       times.push({ i, at: Math.max(arrival, previous) })
     }
@@ -174,59 +175,134 @@ function sparkle(x: string, y: number, scale: number, begin: number): string {
 </use>`
 }
 
+// The share of the bar the step in progress takes, the others sharing the rest, and how long the
+// sections take to slide to their new widths when a step is checked off.
+export const ZOOM = 0.65
+export const REFLOW_S = 0.5
+
+/**
+ * Where the sections' edges fall (0-1 along the bar) for `n` steps with step `current` in progress:
+ * it takes ZOOM of the bar and the others share the rest; with no step in progress, or no more room
+ * to give it than its equal share, they are equal.
+ */
+export function layout(n: number, current: number, zoom = ZOOM): number[] {
+  if (n < 2 || current < 0 || current >= n || zoom <= 1 / n) return Array.from({ length: n + 1 }, (_, i) => i / n)
+  const rest = (1 - zoom) / (n - 1)
+  const edges = [0]
+  for (let i = 0; i < n; i++) edges.push(edges[i]! + (i === current ? zoom : rest))
+  edges[n] = 1
+  return edges
+}
+
+/** Where on the bar (0-1) a place `p` of the way through the ask (0-1, its steps equal) is drawn. */
+export function onBar(p: number, edges: readonly number[]): number {
+  const n = edges.length - 1
+  if (p >= 1) return 1
+  const i = Math.min(n - 1, Math.floor(p * n + 1e-9))
+  return edges[i]! + (p * n - i) * (edges[i + 1]! - edges[i]!)
+}
+
+// The bar's own units: the band stretches them to its width, so a section's place and width are
+// plain numbers the drawing can ease (a CSS length with calc() can't be).
+const U = 1000
+const GAP_U = 5
+const INSET_U = 3
+
+/** An eased move of one attribute, `begin` seconds in, or nothing when it doesn't move. */
+function ease(attribute: string, from: number, to: number, seconds: number, begin = 0): string {
+  return seconds > 0 && Math.abs(from - to) >= 0.01
+    ? `<animate attributeName="${attribute}" from="${from.toFixed(2)}" to="${to.toFixed(2)}" dur="${seconds}s" begin="${begin.toFixed(3)}s" calcMode="spline" keyTimes="0;1" keySplines="${KEY_SPLINE}" fill="freeze"/>`
+    : ''
+}
+
+/** One attribute eased through `points` (seconds, value), holding between them, frozen at the last. */
+function path(attribute: string, points: readonly [number, number][]): string {
+  const kept = points.filter(([t], i) => i === 0 || t - points[i - 1]![0] > 1e-6)
+  if (kept.length < 2) return ''
+  const total = kept[kept.length - 1]![0]
+  return `<animate attributeName="${attribute}" values="${kept.map(([, v]) => v.toFixed(2)).join(';')}" keyTimes="${kept.map(([t]) => (t / total).toFixed(4)).join(';')}" calcMode="spline" keySplines="${kept.slice(1).map(() => KEY_SPLINE).join(';')}" dur="${total.toFixed(3)}s" fill="freeze"/>`
+}
+
 /**
  * The bar: a rounded outline across the band with an inset fill that eases from `from` to `to`
- * (fractions of the bar) and stays there. The fill reveals a fixed blue-to-green ramp laid along
- * the whole bar, so its colour follows how far it has got. Each section the move finishes blinks
- * gold as the fill passes its end; when the ask is done the outline turns gold on arrival and the
+ * (fractions of the ask, its steps equal) and stays there. With `n` steps the bar is cut into
+ * sections, the step in progress (`slices.at`) zoomed to ZOOM of it; when that step is not the one
+ * the last drawing zoomed (`was`), the sections first slide to their new widths, the fill keeping
+ * to them, and then the fill eases on. The fill reveals a fixed blue-to-green ramp laid along the
+ * whole bar, so its colour follows how far it has got. Each section the move finishes blinks gold
+ * as the fill passes its end; when the ask is done the outline turns gold on arrival and the
  * finale plays once, leaving a soft gold glow. Everything in it plays from when the drawing is
  * mounted and freezes where it ends, so a drawing is one state and never needs another to finish
  * it. Explicit colours: the drawing doesn't inherit currentColor, and the band refuses a drawing
  * with a <style> element.
  */
-export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }): string {
+export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at): string {
   const inset = 2.5
   const bar = `(100% - ${2 * MARGIN}px)`
   const along = (k: number) => `calc(${MARGIN}px + ${bar} * ${k.toFixed(4)})`
-  const inner = `(${bar} - ${2 * inset}px)`
-  const seconds = fillSeconds(from, to)
-  // The fill is the whole inner bar, shown through a clip that is scaled to the estimate; easing
-  // the clip's scale moves the fill without moving the ramp under it.
-  const move = seconds > 0
-    ? `<animateTransform attributeName="transform" type="scale" additive="sum" from="${from.toFixed(4)} 1" to="${to.toFixed(4)} 1" dur="${seconds.toFixed(3)}s" calcMode="spline" keySplines="${KEY_SPLINE}" keyTimes="0;1" fill="freeze"/>`
-    : ''
-  const reveal = `<clipPath id="fill"><rect y="${inset}" height="${H - 2 * inset}" transform="translate(${MARGIN + inset} 0)${move ? '' : ` scale(${to.toFixed(4)} 1)`}" style="x:0;width:calc${inner}">${move}</rect></clipPath>`
-  const body = `<rect y="${inset}" height="${H - 2 * inset}" rx="2.5" fill="url(#ramp)" clip-path="url(#fill)" style="x:${MARGIN + inset}px;width:calc${inner}"/>`
+  const edges = layout(n, slices.at)
+  const before = layout(n, was)
+  const reflow = before.some((x, i) => Math.abs(x - edges[i]!) > 1e-6) ? REFLOW_S : 0
+  // A check-off plays out in the old layout first: the fill reaches the end of the steps checked
+  // off while they are still wide and they blink there; only then do the sections slide to their
+  // new widths, and the fill eases on into the step in progress.
+  const finished = reflow > 0 && was < slices.at ? Math.max(from, Math.min(to, slices.at / n)) : from
+  const a = onBar(from, before)
+  const m1 = onBar(finished, before)
+  const first = fillSeconds(a, m1)
+  const blinksBefore = blinkTimes(a, m1, n, isDone, before)
+  const slideAt = reflow > 0 ? Math.max(first, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : 0
+  const m2 = onBar(finished, edges)
+  const c = onBar(to, edges)
+  const fillAt = slideAt + reflow
+  const seconds = fillSeconds(m2, c)
+  const total = fillAt + seconds
+  // The fill keeps to its place through the sections' slide, then eases to the new estimate.
+  const W = U - 2 * INSET_U
+  const move = path('width', [[0, a * W], [first, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]])
+  const body = `<rect data-fill="" x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" width="${((move ? a : c) * W).toFixed(2)}" fill="url(#ramp)">${move}</rect>`
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
     ? `<animate attributeName="stroke" to="#d9a521" dur="0.25s" begin="${begin.toFixed(3)}s" fill="freeze"/>`
     : ''
   // With a task list, the one fill shows through n sections, so it moves exactly as one bar does
-  // and reads as one bar filling across them.
-  const gap = 4
-  const section = (i: number, grow: number) => {
-    const before = (i === 0 ? 0 : gap / 2) - grow
-    const after = (i === n - 1 ? 0 : gap / 2) - grow
-    return `x:calc(${along(i / n)} + ${before}px);width:calc(${bar} / ${n} - ${before + after}px)`
+  // and reads as one bar filling across them. A section slides from its last place to its new one.
+  const place = (e: readonly number[], i: number, grow: number) => {
+    const start = (i === 0 ? 0 : GAP_U / 2) - grow
+    const end = (i === n - 1 ? 0 : GAP_U / 2) - grow
+    return { x: e[i]! * U + start, w: (e[i + 1]! - e[i]!) * U - start - end }
+  }
+  const section = (i: number, grow: number, attributes: string, inner = '') => {
+    const o = place(before, i, grow)
+    const m = place(edges, i, grow)
+    const at = reflow > 0 ? o : m
+    return `<rect x="${at.x.toFixed(2)}" width="${at.w.toFixed(2)}" ${attributes}>${ease('x', o.x, m.x, reflow, slideAt)}${ease('width', o.w, m.w, reflow, slideAt)}${inner}</rect>`
   }
   const cut = n > 1
-    ? `<clipPath id="sec">${Array.from({ length: n }, (_, i) => `<rect y="${inset}" height="${H - 2 * inset}" rx="2.5" style="${section(i, -inset)}"/>`).join('')}</clipPath>`
+    ? `<clipPath id="sec">${Array.from({ length: n }, (_, i) => section(i, -INSET_U, `y="${inset}" height="${H - 2 * inset}" rx="3" ry="2.5"`)).join('')}</clipPath>`
     : ''
   // The step in progress is cut once more, faintly, into a slice per worker it sent out.
+  const span = (edges[slices.at + 1] ?? 1) - (edges[slices.at] ?? 0)
   const ticks = slices.of > 1 && slices.at < n
     ? Array.from({ length: slices.of - 1 }, (_, k) =>
-      `<rect data-tick="" y="${inset + 2}" width="1" height="${H - 2 * inset - 4}" fill="#8a8a8a" opacity="0.7" style="x:${along((slices.at + (k + 1) / slices.of) / n)}"/>`).join('')
+      `<rect data-tick="" x="${(((edges[slices.at] ?? 0) + span * (k + 1) / slices.of) * U).toFixed(2)}" y="${inset + 2}" width="1.2" height="${H - 2 * inset - 4}" fill="#8a8a8a" opacity="${reflow > 0 ? 0 : 0.7}">${reflow > 0 ? `<animate attributeName="opacity" to="0.7" dur="0.2s" begin="${fillAt.toFixed(3)}s" fill="freeze"/>` : ''}</rect>`).join('')
     : ''
-  const blinks = blinkTimes(from, to, n, isDone)
-  const finaleAt = Math.max(seconds, ...blinks.map(({ at }) => at + SECTION_BLINK_S))
+  const blinksAfter = blinkTimes(m2, c, n, isDone, edges, fillAt)
+  const finaleAt = Math.max(total, ...[...blinksBefore, ...blinksAfter].map(({ at }) => at + SECTION_BLINK_S))
+  const stroke = 'fill="none" stroke="#8a8a8a" stroke-width="1" vector-effect="non-scaling-stroke"'
   const outlines = n > 1
-    ? Array.from({ length: n }, (_, i) => `<rect y="0.5" height="${H - 1}" rx="${n > 6 ? 3 : 4}" fill="none" stroke="#8a8a8a" stroke-width="1" style="${section(i, -0.5)}">${outlineAt(finaleAt)}</rect>`).join('')
-    : `<rect y="0.5" height="${H - 1}" rx="4" fill="none" stroke="#8a8a8a" stroke-width="1" style="x:${MARGIN + 0.5}px;width:calc(${bar} - 1px)">${outlineAt(finaleAt)}</rect>`
-  // A section the move finishes blinks gold, with a few sparkles, one after another.
-  const blinking = blinks
-    .map(({ i, at }) =>
-      `<rect y="-1.5" height="${H + 2}" rx="5" fill="none" stroke="#ffd54a" stroke-width="2" filter="url(#glow)" opacity="0" style="${section(i, 1.5)}"><animate attributeName="opacity" values="0;1;0;1;0" dur="${SECTION_BLINK_S}s" begin="${at.toFixed(3)}s" fill="freeze"/></rect>`
-      + [0.2, 0.5, 0.8].map((k, j) => sparkle(along((i + k) / n), j % 2 ? -2 : H + 2, 0.6, at + 0.05 + j * 0.08)).join(''))
+    ? Array.from({ length: n }, (_, i) => section(i, 0.5, `y="0.5" height="${H - 1}" rx="${n > 6 ? 3.5 : 5}" ry="${n > 6 ? 3 : 4}" ${stroke}`, outlineAt(finaleAt))).join('')
+    : `<rect x="0.5" y="0.5" width="${U - 1}" height="${H - 1}" rx="5" ry="4" ${stroke}>${outlineAt(finaleAt)}</rect>`
+  // A section the move finishes blinks gold where it stands then, with a few sparkles, one after
+  // another: a step checked off blinks while it is still wide.
+  const blinks = [...blinksBefore.map(b => ({ ...b, e: before })), ...blinksAfter.map(b => ({ ...b, e: edges }))]
+  const blinking = blinks.map(({ i, at, e }) => {
+    const m = place(e, i, 1.5)
+    return `<rect x="${m.x.toFixed(2)}" width="${m.w.toFixed(2)}" y="-1.5" height="${H + 2}" rx="6" ry="5" fill="none" stroke="#ffd54a" stroke-width="2" vector-effect="non-scaling-stroke" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="0;1;0;1;0" dur="${SECTION_BLINK_S}s" begin="${at.toFixed(3)}s" fill="freeze"/></rect>`
+  }).join('')
+  // The sparkles stay outside the stretched units, so they keep their shape.
+  const sparkles = blinks
+    .map(({ i, at, e }) => [0.2, 0.5, 0.8].map((k, j) => sparkle(along(e[i]! + k * (e[i + 1]! - e[i]!)), j % 2 ? -2 : H + 2, 0.6, at + 0.05 + j * 0.08)).join(''))
     .join('')
   // The ask's end: a shine sweeps across, the gold border blinks three times and settles to a
   // glow, and a burst of sparkles pops along the bar. The glow stays.
@@ -240,25 +316,29 @@ ${SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0
     : ''
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
 <defs>
-<linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="${MARGIN}" x2="100%" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 <path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
-<clipPath id="c"><rect y="0" height="${H}" rx="4" style="x:${MARGIN}px;width:calc${bar}"/></clipPath>${cut}${reveal}
+<clipPath id="c"><rect y="0" height="${H}" rx="4" style="x:${MARGIN}px;width:calc${bar}"/></clipPath>
 <filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
 </defs>
 <g transform="translate(0 ${PAD})">
+<svg x="${MARGIN}" y="0" height="${H}" style="width:calc${bar}" viewBox="0 0 ${U} ${H}" preserveAspectRatio="none" overflow="visible">
+<defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
 ${ticks}
 ${blinking}
+</svg>
+${sparkles}
 ${flourish}
 </g>
 </svg>`
 }
 
-// The bar's last state: the fill eased to `to` (a fraction of the bar) from `from`, cut into `n`
-// sections, with the ask done or not. The next estimate's drawing eases on from `to`.
-type State = { from: number; to: number; isDone: boolean; n: number }
+// The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
+// sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
+// The next estimate's drawing eases on from `to`.
+type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number }
 let last: State | null = null
 
 // Tool calls since the model's last estimate, and whether this lapse has had its reminder.
@@ -316,12 +396,17 @@ const MIN_MOVE = 0.03
  */
 export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }): string {
   const to = percent / 100
-  const unseen = last !== null && last.isDone === isDone && last.n === n && to < 1 && Math.abs(to - last.to) < MIN_MOVE
-  if (!unseen && (last === null || last.to !== to || last.isDone !== isDone || last.n !== n)) {
+  const at = slices.at
+  const edges = layout(n, at)
+  const unseen = last !== null && last.isDone === isDone && last.n === n && last.at === at && to < 1
+    && Math.abs(onBar(to, edges) - onBar(last.to, edges)) < MIN_MOVE
+  if (!unseen && (last === null || last.to !== to || last.isDone !== isDone || last.n !== n || last.at !== at)) {
     const from = last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
-    last = { from, to, isDone, n }
+    // The sections slide only between two layouts of the same list.
+    const was = last !== null && last.n === n ? last.at : at
+    last = { from, to, isDone, n, at, was }
   }
-  return battery(last.from, last.to, last.isDone, n, slices)
+  return battery(last.from, last.to, last.isDone, n, slices, last.was)
 }
 
 export const register: Register = on => {
@@ -623,7 +708,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 }
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; to: number; n: number; of: number }
+type Layer = { key: number; source: string; to: number; n: number; at: number; of: number }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
@@ -636,9 +721,10 @@ let layers = 0
  */
 function layer(source: string, state: State, of: number) {
   if (top !== null && top.source === source) return
-  const carriesOn = top !== null && state.n === top.n && of === top.of && state.from === top.to && state.to >= top.to
+  const carriesOn = top !== null && state.n === top.n && state.at === top.at && state.was === state.at && of === top.of
+    && state.from === top.to && state.to >= top.to
   below = carriesOn ? top : null
-  top = { key: ++layers, source, to: state.to, n: state.n, of }
+  top = { key: ++layers, source, to: state.to, n: state.n, at: state.at, of }
 }
 
 /** What the bar shows now, or null while there's no estimate to show. */

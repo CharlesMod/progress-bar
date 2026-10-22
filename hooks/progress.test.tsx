@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, battery, blinkTimes, fillSeconds, lastPercent, place, progressIn, settle, stripTags, tally } from './register'
+import { applyPlan, battery, blinkTimes, fillSeconds, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -262,12 +262,15 @@ test('a message sent mid-ask keeps the bar where it was', async ($, on) => {
   expect(await label($, 'desktop')).toBe('30%')
 })
 
-// Where a drawing's fill eases from and to, 0 to 1 (the same place when it's drawn still).
+// Where on the bar a drawing's fill starts and ends, 0 to 1 (the same place when it's drawn still).
 function moveOf(svg: string): [number, number] {
-  const eased = svg.match(/type="scale" additive="sum" from="([\d.]+) 1" to="([\d.]+) 1"/)
-  if (eased) return [Number(eased[1]), Number(eased[2])]
-  const still = Number(svg.match(/translate\([\d.]+ 0\) scale\(([\d.]+) 1\)/)![1])
-  return [still, still]
+  const W = 994
+  const at = (x: string) => Math.round((Number(x) / W) * 10000) / 10000
+  const fill = svg.match(/<rect data-fill=""[^>]*width="([\d.]+)"[^>]*>(.*?)<\/rect>/)!
+  const values = fill[2]!.match(/values="([\d.;]+)"/)?.[1]?.split(';')
+  if (values) return [at(values[0]!), at(values[values.length - 1]!)]
+  const to = fill[2]!.match(/to="([\d.]+)"/)?.[1]
+  return [at(fill[1]!), at(to ?? fill[1]!)]
 }
 
 test('the fill eases from the last estimate to the new one, and the finale plays once, frozen at its end', async ($, on) => {
@@ -314,7 +317,8 @@ test('the task list cuts the bar into sections, which only the model fills, each
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
   let svg = (await source($))!
   expect(svg.match(/<clipPath id="sec">(.*?)<\/clipPath>/)![1].match(/<rect /g)!.length).toBe(4)
-  expect(moveOf(svg)).toEqual([0.025, 0.025])
+  // The first step, in progress, is zoomed: its 10% is a tenth of its wide section.
+  expect(moveOf(svg)).toEqual([0.065, 0.065])
   expect(svg).not.toContain('<animate')
   expect(await label($, 'desktop')).toBe('2.5%')
   // Finishing the first step, then an estimate for the second: the fill crosses the first
@@ -325,8 +329,13 @@ test('the task list cuts the bar into sections, which only the model fills, each
   svg = (await source($))!
   const blinks = [...svg.matchAll(/values="0;1;0;1;0" dur="0.6s" begin="([\d.-]+)s"/g)].map(m => Number(m[1]))
   expect(blinks.length).toBe(1)
-  expect(blinks[0]! > 0 && blinks[0]! < fillSeconds(0.025, 0.4)).toBe(true)
-  expect(moveOf(svg)).toEqual([0.025, 0.4])
+  // The first step fills and blinks while it is still wide; only then do the sections slide (the
+  // first narrows, the second widens) and the fill eases on.
+  const reached = fillSeconds(onBar(0.025, layout(4, 0)), onBar(0.25, layout(4, 0)))
+  expect(blinks[0]! > 0 && blinks[0]! <= reached + 0.001).toBe(true)
+  const slide = Number(svg.match(new RegExp(`dur="${REFLOW_S}s" begin="([\\d.]+)s"`))![1])
+  close(slide, blinks[0]! + 0.6, 3)
+  expect(moveOf(svg)).toEqual([0.065, Math.round(onBar(0.4, layout(4, 1)) * 10000) / 10000])
   // A new ask starts with one section again.
   await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
   await $.turn.start({ text: 'next', turnId: 't2' })
@@ -546,4 +555,44 @@ test('a drawing that moves the bar back has nothing beneath it, so no old fill s
   await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
   await $.turn.start({ text: 'new job', turnId: 't2' })
   expect(await layers($)).toHaveLength(1)
+})
+
+const close = (a: number, b: number, digits = 6) => expect(Math.abs(a - b) < 10 ** -digits).toBe(true)
+
+test('the step in progress takes most of the bar, the others sharing the rest', () => {
+  const edges = layout(5, 1)
+  close(edges[2]! - edges[1]!, ZOOM)
+  close(edges[1]! - edges[0]!, (1 - ZOOM) / 4)
+  expect(edges[5]).toBe(1)
+  // no step in progress, or too few steps to give it more than its share: equal
+  expect(layout(5, 5)).toEqual([0, 0.2, 0.4, 0.6, 0.8, 1])
+  expect(layout(1, 0)).toEqual([0, 1])
+  // half of the step in progress is half of its wide section
+  close(onBar(0.3, edges), edges[1]! + 0.5 * ZOOM)
+})
+
+test('a check-off fills and blinks the step while it is wide, then slides the sections, then fills on', () => {
+  const svg = battery(0.2, 0.375, false, 4, { at: 1, of: 0 }, 0)
+  const before = layout(4, 0)
+  const after = layout(4, 1)
+  // the finished step blinks where it stood, wide
+  const blink = svg.match(/<rect x="(-?[\d.]+)" width="([\d.]+)" y="-1.5"[^>]*><animate attributeName="opacity" values="0;1;0;1;0" dur="0.6s" begin="([\d.]+)s"/)!
+  expect(Number(blink[2]) > 0.6 * 1000).toBe(true)
+  const blinkAt = Number(blink[3])
+  // the two sections that change (the finished one narrowing, the next widening) ease their
+  // width once the blink is over, outline and fill cut alike; the others keep theirs
+  const slides = [...svg.matchAll(new RegExp(`attributeName="width" from="[\\d.]+" to="[\\d.]+" dur="${REFLOW_S}s" begin="([\\d.]+)s"`, 'g'))]
+  expect(slides.length).toBe(4)
+  for (const m of slides) close(Number(m[1]), blinkAt + 0.6, 3)
+  // the fill reaches the end of the step in the wide layout, holds through the blink, keeps to that
+  // end as the sections slide, then eases into the next step
+  const values = svg.match(/<rect data-fill=""[^>]*>.*?values="([\d.;]+)"/)![1]!.split(';').map(v => Number(v) / 994)
+  expect(values.length).toBe(5)
+  close(values[0]!, onBar(0.2, before), 3)
+  close(values[1]!, onBar(0.25, before), 3)
+  close(values[2]!, onBar(0.25, before), 3)
+  close(values[3]!, onBar(0.25, after), 3)
+  close(values[4]!, onBar(0.375, after), 3)
+  // a drawing with no check-off doesn't slide
+  expect(battery(0.3, 0.35, false, 4, { at: 1, of: 0 }, 1)).not.toContain(`dur="${REFLOW_S}s"`)
 })
