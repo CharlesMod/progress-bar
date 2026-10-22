@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, battery, blinkTimes, fillSeconds, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -279,7 +279,7 @@ test('the fill eases from the last estimate to the new one, and the finale plays
   await say($, 'Started. [D20%]', 'a1')
   let svg = (await source($))!
   expect(moveOf(svg)).toEqual([0, 0.2])
-  expect(svg).toContain('keySplines="0.42 0 0.58 1"')
+  expect(svg).toMatch(/keySplines="0.42 0 0.58 1(;0.42 0 0.58 1)*"/)
   expect(svg).toContain('fill="freeze"')
   // Nothing has changed: the band is handed the same drawing, so it keeps the one it has.
   expect(await source($)).toBe(svg)
@@ -332,7 +332,7 @@ test('the task list cuts the bar into sections, which only the model fills, each
   // The first step fills and blinks while it is still wide; only then do the sections slide (the
   // first narrows, the second widens) and the fill eases on.
   const reached = fillSeconds(onBar(0.025, layout(4, 0)), onBar(0.25, layout(4, 0)))
-  expect(blinks[0]! > 0 && blinks[0]! <= reached + 0.001).toBe(true)
+  expect(blinks[0]! > LEAD_S && blinks[0]! <= LEAD_S + reached + 0.001).toBe(true)
   const slide = Number(svg.match(new RegExp(`dur="${REFLOW_S}s" begin="([\\d.]+)s"`))![1])
   close(slide, blinks[0]! + 0.6, 3)
   expect(moveOf(svg)).toEqual([0.065, Math.round(onBar(0.4, layout(4, 1)) * 10000) / 10000])
@@ -587,12 +587,47 @@ test('a check-off fills and blinks the step while it is wide, then slides the se
   // the fill reaches the end of the step in the wide layout, holds through the blink, keeps to that
   // end as the sections slide, then eases into the next step
   const values = svg.match(/<rect data-fill=""[^>]*>.*?values="([\d.;]+)"/)![1]!.split(';').map(v => Number(v) / 994)
-  expect(values.length).toBe(5)
+  expect(values.length).toBe(6)
   close(values[0]!, onBar(0.2, before), 3)
-  close(values[1]!, onBar(0.25, before), 3)
+  close(values[1]!, onBar(0.2, before), 3)
   close(values[2]!, onBar(0.25, before), 3)
-  close(values[3]!, onBar(0.25, after), 3)
-  close(values[4]!, onBar(0.375, after), 3)
+  close(values[3]!, onBar(0.25, before), 3)
+  close(values[4]!, onBar(0.25, after), 3)
+  close(values[5]!, onBar(0.375, after), 3)
   // a drawing with no check-off doesn't slide
   expect(battery(0.3, 0.35, false, 4, { at: 1, of: 0 }, 1)).not.toContain(`dur="${REFLOW_S}s"`)
+})
+
+test('a bar cut into a new plan fills in from empty, never jumping to its first estimate', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  // the first estimate and the plan arrive in one response: the text, then the call
+  await say($, 'Starting. [D20%]', 'a1')
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'in_progress' }, { content: 'b', status: 'pending' }, { content: 'c', status: 'pending' }] })
+  const [from, to] = moveOf((await source($))!)
+  expect(from).toBe(0)
+  expect(to > 0).toBe(true)
+})
+
+test('every move waits a moment before it starts, so it plays once the frame is on screen', () => {
+  const svg = battery(0, 0.3, false)
+  const keyTimes = svg.match(/<rect data-fill=""[^>]*>.*?keyTimes="([\d.;]+)"[^>]*dur="([\d.]+)s"/)!
+  const [, second] = keyTimes[1]!.split(';').map(Number)
+  close(second! * Number(keyTimes[2]), LEAD_S, 3)
+  // the fill holds at empty for that moment
+  const values = svg.match(/<rect data-fill=""[^>]*>.*?values="([\d.;]+)"/)![1]!.split(';').map(Number)
+  expect(values[0]).toBe(0)
+  expect(values[1]).toBe(0)
+  // a drawing where nothing moves has no animation at all
+  expect(battery(0.3, 0.3, false)).not.toContain('attributeName="width"')
+})
+
+test('the drawing sizes itself without calc(), and the finale shine sweeps in plain numbers', () => {
+  const svg = battery(0.6, 1, true, 3, { at: 3, of: 0 }, 2)
+  // a nested drawing doesn't take a calc() width, so it would overflow the band
+  expect(svg).not.toContain('calc(')
+  // a percentage x doesn't animate, so the shine sweeps from a number to a number
+  expect(svg).toMatch(/attributeName="x" from="-?\d+" to="\d+"/)
+  expect(svg).not.toMatch(/attributeName="x" from="-?[\d.]+%"/)
 })

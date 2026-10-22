@@ -1,6 +1,6 @@
 # progress-bar
 
-![The bar in the Claude desktop app: a five-step task list with three steps done and the fourth about 60% in](screenshot.png)
+![The bar through one ask: a four-step plan fills, each finished step blinks gold and shrinks while the next one zooms in, and the whole bar sparkles when the work is done](progress.gif)
 
 A Claude Code mod that draws a slim progress bar in the prompt footer, showing Claude's own running estimate of how far along your latest request is. It's made for long requests that run 10 to 40 minutes.
 

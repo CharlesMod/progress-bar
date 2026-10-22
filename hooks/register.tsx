@@ -110,7 +110,6 @@ function format(percent: number): string {
 
 const H = 14
 const PAD = 5 // room around the bar for the gold glow and sparkles
-const MARGIN = 6
 
 // The fill's easing, in and out: a cubic bezier from time to distance, as SMIL spells it.
 const EASE = { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }
@@ -180,6 +179,10 @@ function sparkle(x: string, y: number, scale: number, begin: number): string {
 export const ZOOM = 0.65
 export const REFLOW_S = 0.5
 
+// A drawing's clock starts as its frame begins to load, before the band shows it; everything in it
+// waits this long first, so a move plays on screen rather than while the frame is still blank.
+export const LEAD_S = 0.3
+
 /**
  * Where the sections' edges fall (0-1 along the bar) for `n` steps with step `current` in progress:
  * it takes ZOOM of the bar and the others share the rest; with no step in progress, or no more room
@@ -207,6 +210,11 @@ export function onBar(p: number, edges: readonly number[]): number {
 const U = 1000
 const GAP_U = 5
 const INSET_U = 3
+// The room left of and right of the bar for its glow, in the same units: the bar and everything
+// around it lay out in one stretched span, so nothing needs a calc() (which a nested drawing's
+// width doesn't take).
+const MARGIN_U = 11
+const SPAN_U = U + 2 * MARGIN_U
 
 /** An eased move of one attribute, `begin` seconds in, or nothing when it doesn't move. */
 function ease(attribute: string, from: number, to: number, seconds: number, begin = 0): string {
@@ -218,7 +226,7 @@ function ease(attribute: string, from: number, to: number, seconds: number, begi
 /** One attribute eased through `points` (seconds, value), holding between them, frozen at the last. */
 function path(attribute: string, points: readonly [number, number][]): string {
   const kept = points.filter(([t], i) => i === 0 || t - points[i - 1]![0] > 1e-6)
-  if (kept.length < 2) return ''
+  if (kept.length < 2 || kept.every(([, v]) => Math.abs(v - kept[0]![1]) < 0.005)) return ''
   const total = kept[kept.length - 1]![0]
   return `<animate attributeName="${attribute}" values="${kept.map(([, v]) => v.toFixed(2)).join(';')}" keyTimes="${kept.map(([t]) => (t / total).toFixed(4)).join(';')}" calcMode="spline" keySplines="${kept.slice(1).map(() => KEY_SPLINE).join(';')}" dur="${total.toFixed(3)}s" fill="freeze"/>`
 }
@@ -238,8 +246,8 @@ function path(attribute: string, points: readonly [number, number][]): string {
  */
 export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at): string {
   const inset = 2.5
-  const bar = `(100% - ${2 * MARGIN}px)`
-  const along = (k: number) => `calc(${MARGIN}px + ${bar} * ${k.toFixed(4)})`
+  // A place along the bar (0-1) as a share of the drawing's width, for what is drawn unstretched.
+  const along = (k: number) => `${(((MARGIN_U + k * U) / SPAN_U) * 100).toFixed(3)}%`
   const edges = layout(n, slices.at)
   const before = layout(n, was)
   const reflow = before.some((x, i) => Math.abs(x - edges[i]!) > 1e-6) ? REFLOW_S : 0
@@ -249,9 +257,9 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const finished = reflow > 0 && was < slices.at ? Math.max(from, Math.min(to, slices.at / n)) : from
   const a = onBar(from, before)
   const m1 = onBar(finished, before)
-  const first = fillSeconds(a, m1)
-  const blinksBefore = blinkTimes(a, m1, n, isDone, before)
-  const slideAt = reflow > 0 ? Math.max(first, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : 0
+  const reach = LEAD_S + fillSeconds(a, m1)
+  const blinksBefore = blinkTimes(a, m1, n, isDone, before, LEAD_S)
+  const slideAt = reflow > 0 ? Math.max(reach, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : LEAD_S
   const m2 = onBar(finished, edges)
   const c = onBar(to, edges)
   const fillAt = slideAt + reflow
@@ -259,7 +267,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const total = fillAt + seconds
   // The fill keeps to its place through the sections' slide, then eases to the new estimate.
   const W = U - 2 * INSET_U
-  const move = path('width', [[0, a * W], [first, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]])
+  const move = path('width', [[0, a * W], [LEAD_S, a * W], [reach, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]])
   const body = `<rect data-fill="" x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" width="${((move ? a : c) * W).toFixed(2)}" fill="url(#ramp)">${move}</rect>`
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
@@ -306,31 +314,37 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     .join('')
   // The ask's end: a shine sweeps across, the gold border blinks three times and settles to a
   // glow, and a burst of sparkles pops along the bar. The glow stays.
-  const flourish = isDone
-    ? `<rect clip-path="url(#c)" x="-10%" y="0" width="36" height="${H}" fill="url(#shine)" transform="skewX(-20)" opacity="0">
+  // The shine sweeps in the bar's own units: an eased number, where a percentage doesn't move.
+  const shine = isDone
+    ? `<rect clip-path="url(#c)" x="-80" y="0" width="70" height="${H}" fill="url(#shine)" transform="skewX(-35)" opacity="0">
   <animate attributeName="opacity" to="1" dur="0.01s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/>
-  <animate attributeName="x" from="-10%" to="110%" dur="${SHINE_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/>
-</rect>
-<rect y="-1.5" height="${H + 2}" rx="5" fill="none" stroke="#ffd54a" stroke-width="3" filter="url(#glow)" opacity="0" style="x:${MARGIN - 1.5}px;width:calc(${bar} + 3px)"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
-${SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n')}`
+  <animate attributeName="x" from="-80" to="${U + 80}" dur="${SHINE_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/>
+</rect>`
     : ''
+  const flourish = isDone
+    ? `<rect x="-2" width="${U + 4}" y="-1.5" height="${H + 2}" rx="6" ry="5" fill="none" stroke="#ffd54a" stroke-width="3" vector-effect="non-scaling-stroke" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
+`
+    : ''
+  const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
 <defs>
 <path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
-<clipPath id="c"><rect y="0" height="${H}" rx="4" style="x:${MARGIN}px;width:calc${bar}"/></clipPath>
 <filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
 </defs>
 <g transform="translate(0 ${PAD})">
-<svg x="${MARGIN}" y="0" height="${H}" style="width:calc${bar}" viewBox="0 0 ${U} ${H}" preserveAspectRatio="none" overflow="visible">
-<defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>${cut}</defs>
+<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
+<defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
+<clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
 ${ticks}
 ${blinking}
+${shine}
+${flourish}
 </svg>
 ${sparkles}
-${flourish}
+${burst}
 </g>
 </svg>`
 }
