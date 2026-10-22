@@ -591,23 +591,54 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   }
   const { Box } = ui
   const list = await read($, steps)
-  const source = draw(bar.percent, bar.isDone, Math.max(1, list.total), { at: list.done, of: list.workers ?? 0 })
+  const n = Math.max(1, list.total)
+  const of = list.workers ?? 0
+  const source = draw(bar.percent, bar.isDone, n, { at: list.done, of })
+  layer(source, last!, of)
+  const svg = (drawing: Layer) => (
+    <ui.Svg
+      source={drawing.source}
+      alt={`Progress on the current request: ${bar.label}`}
+      // With no width of its own the drawing is the browser's default 300px; one wider than any
+      // band is held to the band's width, and the drawing lays out inside it at 100%.
+      width={4000}
+      height={H + 2 * PAD}
+      // A frame, not an image: the app re-decodes an image whenever it redraws the band, which
+      // replays any animation in it from the start, where a frame plays once from when it's
+      // mounted and is only mounted again on a new source (which blanks it for a moment).
+      isInteractive
+    />
+  )
+  // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
+  // shows through until it has. Each is keyed by its drawing, so the one beneath is never mounted
+  // again: it was on top a moment ago, and only its place in the band changes.
   return (
     <Box flexGrow={1}>
-      <ui.Svg
-        source={source}
-        alt={`Progress on the current request: ${bar.label}`}
-        // With no width of its own the drawing is the browser's default 300px; one wider than any
-        // band is held to the band's width, and the drawing lays out inside it at 100%.
-        width={4000}
-        height={H + 2 * PAD}
-        // A frame, not an image: the app re-decodes an image whenever it redraws the band, which
-        // replays any animation in it from the start, where a frame plays once from when it's
-        // mounted and is only mounted again on a new source (which blanks it for a moment).
-        isInteractive
-      />
+      {below !== null && <Box key={`d${below.key}`} flexGrow={1}>{svg(below)}</Box>}
+      <Box key={`d${top!.key}`} flexGrow={1} {...(below !== null ? { position: 'absolute' as const, top: 0, left: 0, right: 0 } : {})}>
+        {svg(top!)}
+      </Box>
     </Box>
   )
+}
+
+// The band's drawings: the one on top, and the last one, kept beneath it while it loads.
+type Layer = { key: number; source: string; to: number; n: number; of: number }
+let top: Layer | null = null
+let below: Layer | null = null
+let layers = 0
+
+/**
+ * Puts a new drawing on top. The one it replaces stays beneath it only when the new one carries on
+ * from it (the same sections and slices, its fill easing on from where that one's ended), so all
+ * of it is covered once the new one shows; a bar that moves back or is cut afresh has nothing
+ * beneath it, which no old fill could show through.
+ */
+function layer(source: string, state: State, of: number) {
+  if (top !== null && top.source === source) return
+  const carriesOn = top !== null && state.n === top.n && of === top.of && state.from === top.to && state.to >= top.to
+  below = carriesOn ? top : null
+  top = { key: ++layers, source, to: state.to, n: state.n, of }
 }
 
 /** What the bar shows now, or null while there's no estimate to show. */

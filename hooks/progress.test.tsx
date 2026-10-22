@@ -50,7 +50,7 @@ async function label($: Engine, surface: (typeof SURFACES)[number]) {
   const text =
     surface === 'terminal'
       ? (await ui.find({ type: 'Text', text: /%/ }))?.text
-      : ((await ui.find({ type: 'Svg' }))?.props.alt as string | undefined)
+      : ((await ui.findAll({ type: 'Svg' })).at(-1)?.props.alt as string | undefined)
   await ui.unmount()
   return text?.match(/\d+(?:\.\d+)?%(?: · stopped)?$/)?.[0]
 }
@@ -162,7 +162,8 @@ test('an interrupted ask keeps its last estimate, marked stopped', async ($, on)
 
 async function source($: Engine) {
   const band = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
-  const svg = (await band.find({ type: 'Svg' }))?.props
+  // the drawing on top is the last; one below it is the last drawing, kept while the new one loads
+  const svg = (await band.findAll({ type: 'Svg' })).at(-1)?.props
   await band.unmount()
   expect(svg === undefined || svg.isInteractive === true).toBe(true)
   return svg?.source as string | undefined
@@ -512,4 +513,37 @@ test('a background task\'s notification moves the bar and does not start a new a
   await $.prompt.submit({ text: 'new thing', wait: false, origin: { kind: 'composer' } })
   await $.turn.start({ text: 'new thing', turnId: 't3' })
   expect(await label($, 'desktop')).toBe('0%')
+})
+
+async function layers($: Engine) {
+  const band = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
+  const found = (await band.findAll({ type: 'Svg' })).map(svg => svg.props.source as string)
+  await band.unmount()
+  return found
+}
+
+test('a new drawing goes on top of the last one, which stays mounted beneath it while it loads', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const empty = await layers($)
+  expect(empty).toHaveLength(1)
+  await say($, 'Started. [D30%]', 'a1')
+  const first = await layers($)
+  expect(first).toEqual([empty[0], first[1]])
+  await say($, 'More. [D60%]', 'a2')
+  const second = await layers($)
+  // the drawing that was on top is now beneath, unchanged, so its frame is never mounted again
+  expect(second[0]).toBe(first[1])
+  expect(second).toHaveLength(2)
+  // nothing changed: the same two
+  expect(await layers($)).toEqual(second)
+})
+
+test('a drawing that moves the bar back has nothing beneath it, so no old fill shows through', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Far. [D80%]', 'a1')
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
+  await $.turn.start({ text: 'new job', turnId: 't2' })
+  expect(await layers($)).toHaveLength(1)
 })
