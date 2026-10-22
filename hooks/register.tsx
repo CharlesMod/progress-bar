@@ -359,6 +359,12 @@ let last: State | null = null
 let untagged = 0
 let reminded = false
 
+// Whether the system prompt carries the instructions. A host that composes its prompt without the
+// mods' sections leaves the model with no word of the bar, and with no task list to draw it the
+// bar would wait on a tag that never comes: then an ask's first tool call carries them instead.
+let composed = false
+let instructed = false
+
 // The task list's items' statuses, kept so a plan update that names no items can be applied.
 let statuses: string[] = []
 
@@ -374,6 +380,7 @@ function startAsk() {
   last = null
   untagged = 0
   reminded = false
+  instructed = false
   statuses = []
   workers.clear()
   estimate = null
@@ -426,6 +433,7 @@ export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, 
 export const register: Register = on => {
   on('prompt.compose', async ($, e, next) => {
     const { sections } = await next(e)
+    composed = true
     return {
       sections: [...sections, { id: 'progress-bar:instructions', text: INSTRUCTIONS, scope: 'session' }],
     }
@@ -550,12 +558,17 @@ export const register: Register = on => {
     return result
   }).catch(($, e, next) => next(e))
 
-  // Tool calls that go by with no estimate get one reminder, attached to the third one's result
+  // An ask's first tool call carries the instructions where the system prompt doesn't. Tool calls
+  // that go by with no estimate get one reminder, attached to the third one's result
   // for the model alone; it says nothing again until the model has tagged.
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId !== undefined || 'deny' in result && result.deny !== undefined) return result
     if ((await read($, progress)).phase !== 'working') return result
+    if (!composed && !instructed && estimate === null) {
+      instructed = true
+      return { ...result, context: [...(result.context ?? []), INSTRUCTIONS] }
+    }
     untagged += 1
     if (untagged < REMIND_AFTER || reminded) return result
     reminded = true

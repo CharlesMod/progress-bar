@@ -11,6 +11,7 @@ const BAND_PROPS = {
 const BAND = { component: 'AbovePrompt', props: BAND_PROPS } as const
 const SURVEY = { component: 'AbovePrompt', props: { ...BAND_PROPS, hasSurvey: true } } as const
 const SURFACES = ['terminal', 'desktop'] as const
+const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] }
 
 /** Stands in for the engine beneath the plugin: its turns, the hint line under the prompt and the band above it. */
 function engine(on: On) {
@@ -359,7 +360,9 @@ test('sections finished in one step blink one after another', () => {
 
 test('three tool calls in a row with no estimate get one reminder, and a tag starts the count again', async ($, on) => {
   engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
   on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
   const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Started. [D10%]', 'a1')
@@ -630,4 +633,34 @@ test('the drawing sizes itself without calc(), and the finale shine sweeps in pl
   // a percentage x doesn't animate, so the shine sweeps from a number to a number
   expect(svg).toMatch(/attributeName="x" from="-?\d+" to="\d+"/)
   expect(svg).not.toMatch(/attributeName="x" from="-?[\d.]+%"/)
+})
+
+test('with no system prompt section, an ask\'s first tool call carries the instructions, so a bar with no list still moves', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  // The bar is on screen from the ask's start, with no list and no estimate yet.
+  for (const surface of SURFACES) expect(await label($, surface)).toBe('0%')
+  const first = await call()
+  expect(first.length).toBe(1)
+  expect(first[0]).toContain('# Progress estimate')
+  // Once per ask.
+  expect(await call()).toEqual([])
+  await say($, 'Halfway. [D50%]', 'a1')
+  for (const surface of SURFACES) expect(await label($, surface)).toBe('50%')
+  // Not once the ask has an estimate: the next ask's first call carries them again.
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
+  await $.turn.start({ text: 'again', turnId: 't2' })
+  expect((await call())[0]).toContain('# Progress estimate')
+})
+
+test('where the system prompt carries the instructions, the first tool call carries nothing', async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  const composed = await $.prompt.compose(COMPOSE)
+  expect(composed.sections.some(s => s.id === 'progress-bar:instructions')).toBe(true)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  expect(((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []).toEqual([])
 })
