@@ -270,15 +270,20 @@ export function applyPlan(before: readonly string[], e: { items?: unknown; advan
   return after
 }
 
+// A new drawing remounts the band's frame, which blanks it for a moment: a move smaller than this
+// share of the bar keeps the drawing it has, so small estimates don't blink the bar.
+const MIN_MOVE = 0.03
+
 /**
- * The drawing of the bar for `percent`: the same string for as long as nothing has changed, so the
- * band keeps the drawing it has (and whatever is playing in it plays on); a new estimate is a new
- * drawing that eases the fill on from the last one. A change to the list alone redraws the bar
- * where it is.
+ * The drawing of the bar for `percent`: the same string for as long as nothing visible has changed,
+ * so the band keeps the drawing it has (and whatever is playing in it plays on); an estimate that
+ * moves the fill far enough to see is a new drawing that eases the fill on from the last one. A
+ * change to the list alone redraws the bar where it is.
  */
 export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }): string {
   const to = percent / 100
-  if (last === null || last.to !== to || last.isDone !== isDone || last.n !== n) {
+  const unseen = last !== null && last.isDone === isDone && last.n === n && to < 1 && Math.abs(to - last.to) < MIN_MOVE
+  if (!unseen && (last === null || last.to !== to || last.isDone !== isDone || last.n !== n)) {
     const from = last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
     last = { from, to, isDone, n }
   }
@@ -293,13 +298,13 @@ export const register: Register = on => {
     }
   })
 
-  // A typed ask starts a new bar. A message sent while an ask is still working joins it, and a
-  // continuation turn (empty text) keeps it.
+  // A typed ask starts a new bar, empty and on screen from the start. A message sent while an ask
+  // is still working joins it, and a continuation turn (empty text) keeps it.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined && e.text !== '') {
       const { phase } = await read($, progress)
       if (phase !== 'working') {
-        await update($, progress, (): Progress => ({ percent: null, phase: 'working' }))
+        await update($, progress, (): Progress => ({ percent: 0, phase: 'working' }))
         await update($, steps, (): Steps => ({ total: 0, done: 0 }))
         startAsk()
         await syncStatus($)
@@ -354,6 +359,8 @@ export const register: Register = on => {
         if (p.phase !== 'working') return p
         if (p.percent === null) return { percent: null, phase: 'idle' }
         if (e.reason === 'answer' && finishing) return { percent: 100, phase: 'done' }
+        // A quick answer that never gave an estimate fills its bar, without the finale.
+        if (e.reason === 'answer' && estimate === null && statuses.length === 0) return { percent: 100, phase: 'done', quiet: true }
         return { ...p, phase: e.reason === 'answer' ? 'done' : 'stopped' }
       })
       await syncStatus($)
@@ -533,13 +540,13 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 
 /** What the bar shows now, or null while there's no estimate to show. */
 async function shown($: EngineInterface) {
-  const { percent, phase } = await read($, progress)
+  const { percent, phase, quiet } = await read($, progress)
   if (phase === 'idle' || percent === null) {
     return null
   }
   return {
     percent,
-    isDone: phase === 'done' && percent >= 100,
+    isDone: phase === 'done' && percent >= 100 && !quiet,
     label: phase === 'stopped' ? `${format(percent)} · stopped` : format(percent),
   }
 }

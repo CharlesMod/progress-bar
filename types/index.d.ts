@@ -4,6 +4,8 @@ export type Progress = {
   /** The highest estimate the model has given this ask, 0-100; null before the first tag. */
   percent: number | null
   phase: Phase
+  /** An ask answered with no estimate at all: its bar fills, without the finale. */
+  quiet?: boolean
 }
 
 export type Steps = {

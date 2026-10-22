@@ -72,9 +72,9 @@ test('follows the estimate forward, holds on a lower one, and holds when the tur
   engine(on)
   expect(await label($, 'terminal')).toBeUndefined()
   for (const surface of SURFACES) {
-    // A new ask clears the last one's bar until its first estimate.
+    // A new ask clears the last one's bar to empty, and keeps it on screen before its first estimate.
     await $.turn.start({ text: 'refactor everything', turnId: `t-${surface}` })
-    expect(await label($, surface)).toBeUndefined()
+    expect(await label($, surface)).toBe('0%')
 
     await say($, 'Mapped the code. [D42.5%]', `a-${surface}`)
     expect(await label($, surface)).toBe('42.5%')
@@ -179,8 +179,8 @@ test('a task list shows the bar empty before any estimate, tool calls leave it a
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBeUndefined()
-  // A plan is up, so the bar is too: empty, in its sections, before the first estimate.
+  expect(await label($, 'desktop')).toBe('0%')
+  // A plan is up: the bar is cut into its sections, still empty before the first estimate.
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'in_progress' }] })
   expect(await label($, 'desktop')).toBe('0%')
   await $.tool.call({ tool: 'Bash', command: 'ls' })
@@ -428,4 +428,26 @@ test('the step in progress is cut faintly into a slice per worker', () => {
   expect(ticks(battery(0, 0.5, false, 2, { at: 1, of: 4 }))).toBe(3)
   expect(ticks(battery(0, 0.5, false, 2, { at: 1, of: 1 }))).toBe(0)
   expect(ticks(battery(0, 0.5, false, 2))).toBe(0)
+})
+
+test('a quick answer with no estimate fills its bar without the finale', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'what time is it?', turnId: 't1' })
+  expect(await label($, 'desktop')).toBe('0%')
+  await $.turn.complete({ reason: 'answer', answer: 'Noon.', durationMs: 1, isAborted: false, turnId: 't1' })
+  expect(await label($, 'desktop')).toBe('100%')
+  expect(await source($)).not.toContain('href="#star"')
+})
+
+test('an estimate too small to see keeps the drawing the band has, so it does not blink', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D40%]', 'a1')
+  const svg = (await source($))!
+  await say($, 'A little more. [D41%]', 'a2')
+  expect(await source($)).toBe(svg)
+  expect(await label($, 'desktop')).toBe('41%')
+  // Small moves add up: once the fill has gone far enough to see, it eases on from where it was drawn.
+  await say($, 'More. [D44%]', 'a3')
+  expect(moveOf((await source($))!)).toEqual([0.4, 0.44])
 })
