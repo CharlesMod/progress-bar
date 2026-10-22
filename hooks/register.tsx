@@ -41,6 +41,40 @@ export function lastPercent(texts: readonly string[]): number | null {
   return found
 }
 
+// A command's own count: a `PROGRESS 3/4` or `PROGRESS 40%` marker anywhere, or a line that opens
+// with `N of M` (after any indent or markup), as a gate's batch lines do.
+const MARKER = /\bPROGRESS\s+(\d+)\s*(?:\/\s*(\d+)|%)/g
+const COUNT = /^(?:\s|<[^>]*>)*(\d+) of (\d+)\b/gm
+
+/** How far (0-100) the last count in a command's output says it has got, or null with none. */
+export function progressIn(text: string): number | null {
+  let found: { at: number; percent: number } | null = null
+  const consider = (at: number, done: number, total: number | null) => {
+    const percent = total === null ? done : total > 0 && done <= total ? (done / total) * 100 : null
+    if (percent !== null && percent <= 100 && (found === null || at >= found.at)) found = { at, percent }
+  }
+  for (const m of text.matchAll(MARKER)) consider(m.index!, Number(m[1]), m[2] === undefined ? null : Number(m[2]))
+  for (const m of text.matchAll(COUNT)) consider(m.index!, Number(m[1]), Number(m[2]))
+  return found === null ? null : (found as { percent: number }).percent
+}
+
+// The tools whose output is a command's own: a file read or a search that quotes a count is not.
+const COMMANDS = new Set(['Bash', 'BashOutput', 'TaskOutput', 'Monitor'])
+
+/** The text of a row's blocks, a tool result's included. */
+function rowText(content: readonly { type: string; [field: string]: unknown }[]): string {
+  const parts: string[] = []
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
+    if (block.type === 'tool_result') {
+      const inner = block.content
+      if (typeof inner === 'string') parts.push(inner)
+      else if (Array.isArray(inner)) for (const b of inner) if (b && b.type === 'text' && typeof b.text === 'string') parts.push(b.text)
+    }
+  }
+  return parts.join('\n')
+}
+
 /** A text with its progress tags taken out, along with the spaces before them. */
 export function stripTags(text: string): string {
   return text.replace(/[ \t]*\[D?\s*\d{1,3}(?:\.\d+)?\s*%\]/g, '').trimEnd()
@@ -298,10 +332,26 @@ export const register: Register = on => {
     }
   })
 
+  // A background task's notification wakes a turn of the same ask, carrying what it says: its count
+  // moves the bar, and the turn it starts is no new ask.
+  on('prompt.submit', async ($, e, next) => {
+    const notified = e.origin.kind === 'task-notification'
+    if (notified) {
+      woken = true
+      await counted($, progressIn(e.text))
+    } else {
+      woken = false
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   // A typed ask starts a new bar, empty and on screen from the start. A message sent while an ask
-  // is still working joins it, and a continuation turn (empty text) keeps it.
+  // is still working joins it, and a continuation turn (empty text) or one a notification woke
+  // keeps it.
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined && e.text !== '') {
+    const wasWoken = woken
+    woken = false
+    if (e.agentId === undefined && e.text !== '' && !wasWoken) {
       const { phase } = await read($, progress)
       if (phase !== 'working') {
         await update($, progress, (): Progress => ({ percent: 0, phase: 'working' }))
@@ -312,6 +362,15 @@ export const register: Register = on => {
     }
     return next(e)
   })
+
+  // A command's output on the main loop moves the step in progress by its own count.
+  on('session.append', { door: 'tool-result' }, async ($, e, next) => {
+    const origin = e.origin as { kind: string; tool?: string }
+    if (e.agentId === undefined && origin.kind === 'tool' && origin.tool !== undefined && COMMANDS.has(origin.tool)) {
+      await counted($, progressIn(rowText(e.message.content)))
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('session.append', async ($, e, next) => {
     if (e.agentId === undefined && e.origin.kind === 'model' && e.message.type === 'assistant') {
@@ -458,6 +517,19 @@ export const register: Register = on => {
 }
 
 let lastError = ''
+
+// Whether the submission the next turn starts from was a background task's notification.
+let woken = false
+
+// A command's count never fills its step or the ask: only a check-off or the model's [D100%] does.
+const COUNT_CAP = 99
+
+/** A command's count moves the step in progress (the whole ask, with no list) forward, never back. */
+async function counted($: EngineInterface, percent: number | null) {
+  if (percent === null) return
+  estimate = settle(estimate, Math.min(percent, COUNT_CAP))
+  await redraw($, true)
+}
 
 // The workers the step in progress sent out, by agent id: true once each has reported back.
 const workers = new Map<string, boolean>()

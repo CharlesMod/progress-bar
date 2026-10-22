@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, battery, blinkTimes, fillSeconds, lastPercent, place, settle, stripTags, tally } from './register'
+import { applyPlan, battery, blinkTimes, fillSeconds, lastPercent, place, progressIn, settle, stripTags, tally } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -450,4 +450,66 @@ test('an estimate too small to see keeps the drawing the band has, so it does no
   // Small moves add up: once the fill has gone far enough to see, it eases on from where it was drawn.
   await say($, 'More. [D44%]', 'a3')
   expect(moveOf((await source($))!)).toEqual([0.4, 0.44])
+})
+
+test('reads a PROGRESS marker or a line that starts with N of M, the last one in the text', () => {
+  expect(progressIn('build\nPROGRESS 3/4\n')).toBe(75)
+  expect(progressIn('  12 of 78 batch: batch 3 on a frame\n  39 of 78 batch: batch 9\n')).toBe(50)
+  expect(progressIn('<event>  39 of 78 batch: ok</event>')).toBe(50)
+  expect(progressIn('PROGRESS 40%')).toBe(40)
+  // prose that happens to say "of" mid-line, a count with no total, and a count past its total are not progress
+  expect(progressIn('read 3 of 10 files')).toBeNull()
+  expect(progressIn('  0 of ? step: packing')).toBeNull()
+  expect(progressIn('  9 of 4 batch')).toBeNull()
+  expect(progressIn('PROGRESS 0/0')).toBeNull()
+})
+
+function bashResult($: Engine, text: string, uuid: string, tool = 'Bash') {
+  return $.session.append({
+    message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-' + uuid, content: text }] },
+    door: 'tool-result',
+    origin: { kind: 'tool', tool },
+    uuid,
+  })
+}
+
+test('a command\'s output moves the step in progress, forward only, and never fills it', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'gate it', turnId: 't1' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'completed' }, { content: 'gate', status: 'in_progress' }] })
+  await bashResult($, '  39 of 78 batch: batch 9 on a frame\n', 'r1')
+  expect(await label($, 'desktop')).toBe('75%')
+  await bashResult($, 'PROGRESS 1/4', 'r2')
+  expect(await label($, 'desktop')).toBe('75%')
+  await bashResult($, 'PROGRESS 78/78', 'r3')
+  expect(await label($, 'desktop')).toBe('95%')
+})
+
+test('with no list a command\'s output moves the whole bar, short of done', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'gate it', turnId: 't1' })
+  await bashResult($, 'PROGRESS 1/2', 'r1')
+  expect(await label($, 'desktop')).toBe('50%')
+  await bashResult($, 'PROGRESS 2/2', 'r2')
+  expect(await label($, 'desktop')).toBe('99%')
+  await bashResult($, 'PROGRESS 2/2 quoted', 'r3', 'Read')
+  expect(await label($, 'desktop')).toBe('99%')
+})
+
+test('a background task\'s notification moves the bar and does not start a new ask', async ($, on) => {
+  engine(on)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.turn.start({ text: 'gate it', turnId: 't1' })
+  await say($, 'Gate started. [D10%]', 'a1')
+  await $.turn.complete({ reason: 'answer', answer: 'waiting', durationMs: 1, isAborted: false, turnId: 't1' })
+  const text = '<task-notification><event>  39 of 78 batch: batch 9</event></task-notification>'
+  await $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })
+  await $.turn.start({ text, turnId: 't2' })
+  expect(await label($, 'desktop')).toBe('50%')
+  // the person's own next ask still starts afresh
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't2' })
+  await $.prompt.submit({ text: 'new thing', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'new thing', turnId: 't3' })
+  expect(await label($, 'desktop')).toBe('0%')
 })
