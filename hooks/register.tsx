@@ -456,7 +456,7 @@ async function redraw($: EngineInterface, tagged: boolean) {
   await update($, steps, () => list)
   await update($, progress, (p): Progress => {
     if (!tagged && p.phase !== 'working') return p
-    if (p.percent === null && estimate === null && list.done < 1) return p
+    if (p.percent === null && estimate === null && list.total < 1) return p
     const at = list.total > 0 ? place(estimate ?? 0, list) : settle(p.phase === 'idle' ? null : p.percent, estimate ?? 0)
     return { percent: at, phase: at >= 100 ? 'done' : 'working' }
   })

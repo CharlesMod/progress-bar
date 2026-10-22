@@ -174,13 +174,17 @@ test('an estimate moves the bar forward or not at all', () => {
   expect(settle(40, 55)).toBe(55)
 })
 
-test('tool calls and a list with nothing done leave the bar alone, and the wrap-up checks it all off', async ($, on) => {
+test('a task list shows the bar empty before any estimate, tool calls leave it alone, and the wrap-up checks it all off', async ($, on) => {
   engine(on)
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
-  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'in_progress' }] })
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(await label($, 'desktop')).toBeUndefined()
+  // A plan is up, so the bar is too: empty, in its sections, before the first estimate.
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'in_progress' }] })
+  expect(await label($, 'desktop')).toBe('0%')
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(await label($, 'desktop')).toBe('0%')
   await say($, 'Started. [D20%]', 'a1')
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(await label($, 'desktop')).toBe('20%')
