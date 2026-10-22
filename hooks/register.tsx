@@ -150,7 +150,7 @@ function sparkle(x: string, y: number, scale: number, begin: number): string {
  * it. Explicit colours: the drawing doesn't inherit currentColor, and the band refuses a drawing
  * with a <style> element.
  */
-export function battery(from: number, to: number, isDone: boolean, n = 1): string {
+export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }): string {
   const inset = 2.5
   const bar = `(100% - ${2 * MARGIN}px)`
   const along = (k: number) => `calc(${MARGIN}px + ${bar} * ${k.toFixed(4)})`
@@ -177,6 +177,11 @@ export function battery(from: number, to: number, isDone: boolean, n = 1): strin
   }
   const cut = n > 1
     ? `<clipPath id="sec">${Array.from({ length: n }, (_, i) => `<rect y="${inset}" height="${H - 2 * inset}" rx="2.5" style="${section(i, -inset)}"/>`).join('')}</clipPath>`
+    : ''
+  // The step in progress is cut once more, faintly, into a slice per worker it sent out.
+  const ticks = slices.of > 1 && slices.at < n
+    ? Array.from({ length: slices.of - 1 }, (_, k) =>
+      `<rect data-tick="" y="${inset + 2}" width="1" height="${H - 2 * inset - 4}" fill="#8a8a8a" opacity="0.7" style="x:${along((slices.at + (k + 1) / slices.of) / n)}"/>`).join('')
     : ''
   const blinks = blinkTimes(from, to, n, isDone)
   const finaleAt = Math.max(seconds, ...blinks.map(({ at }) => at + SECTION_BLINK_S))
@@ -210,6 +215,7 @@ ${SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0
 <g transform="translate(0 ${PAD})">
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
+${ticks}
 ${blinking}
 ${flourish}
 </g>
@@ -241,6 +247,7 @@ function startAsk() {
   untagged = 0
   reminded = false
   statuses = []
+  workers.clear()
   estimate = null
   fresh = null
   finishing = false
@@ -269,13 +276,13 @@ export function applyPlan(before: readonly string[], e: { items?: unknown; advan
  * drawing that eases the fill on from the last one. A change to the list alone redraws the bar
  * where it is.
  */
-export function draw(percent: number, isDone: boolean, n = 1): string {
+export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }): string {
   const to = percent / 100
   if (last === null || last.to !== to || last.isDone !== isDone || last.n !== n) {
     const from = last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
     last = { from, to, isDone, n }
   }
-  return battery(last.from, last.to, last.isDone, n)
+  return battery(last.from, last.to, last.isDone, n, slices)
 }
 
 export const register: Register = on => {
@@ -336,9 +343,13 @@ export const register: Register = on => {
   })
 
   // The turn's end only marks the ask as no longer working, so the next typed ask starts afresh;
-  // an answer that ended on [D100%] with steps still unchecked fills the bar then.
+  // an answer that ended on [D100%] with steps still unchecked fills the bar then. A worker's turn
+  // ending is that worker back.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) {
+    if (e.agentId !== undefined && workers.get(e.agentId) === false) {
+      workers.set(e.agentId, true)
+      await workersMoved($)
+    } else if (e.agentId === undefined) {
       await update($, progress, (p): Progress => {
         if (p.phase !== 'working') return p
         if (p.percent === null) return { percent: null, phase: 'idle' }
@@ -361,6 +372,17 @@ export const register: Register = on => {
     const left = await next(e)
     await syncStatus($)
     return left
+  }).catch(($, e, next) => next(e))
+
+  // A worker the main loop sends out while a step is in progress is a slice of that step, filled
+  // when its turn ends (in turn.complete). A worker's own helpers are its business.
+  on('agent.spawn', async ($, e, next) => {
+    const result = await next(e)
+    if (e.parentAgentId === undefined && result.agentId !== undefined && statuses.includes('in_progress')) {
+      workers.set(result.agentId, false)
+      await workersMoved($)
+    }
+    return result
   }).catch(($, e, next) => next(e))
 
   // Tool calls that go by with no estimate get one reminder, attached to the third one's result
@@ -430,6 +452,23 @@ export const register: Register = on => {
 
 let lastError = ''
 
+// The workers the step in progress sent out, by agent id: true once each has reported back.
+const workers = new Map<string, boolean>()
+
+/** How far the step's workers put it: the share of them back, or null with none sent out. */
+export function workersBack(sent: ReadonlyMap<string, boolean>): number | null {
+  if (sent.size < 1) return null
+  return ([...sent.values()].filter(Boolean).length / sent.size) * 100
+}
+
+/** A worker's coming or going moves the step in progress forward by its share, never back. */
+async function workersMoved($: EngineInterface) {
+  const share = workersBack(workers)
+  if (share === null) return
+  estimate = settle(estimate, share)
+  await redraw($, false)
+}
+
 /**
  * The task list cuts the bar into sections and fills a finished step's, as it is checked off; the
  * step in progress is the model's estimate's to fill. A step that starts begins empty, unless the
@@ -440,6 +479,7 @@ async function listed($: EngineInterface, next: string[]) {
   const after = tally(next)
   if (next.indexOf('in_progress') !== statuses.indexOf('in_progress') || after.done !== before.done || after.total !== before.total) {
     estimate = fresh !== null && fresh < 100 ? fresh : null
+    workers.clear()
   }
   statuses = next
   await redraw($, false)
@@ -453,7 +493,7 @@ async function listed($: EngineInterface, next: string[]) {
  */
 async function redraw($: EngineInterface, tagged: boolean) {
   const list = tally(statuses)
-  await update($, steps, () => list)
+  await update($, steps, (): Steps => ({ ...list, workers: workers.size }))
   await update($, progress, (p): Progress => {
     if (!tagged && p.phase !== 'working') return p
     if (p.percent === null && estimate === null && list.total < 1) return p
@@ -471,7 +511,8 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     return next(e)
   }
   const { Box } = ui
-  const source = draw(bar.percent, bar.isDone, Math.max(1, (await read($, steps)).total))
+  const list = await read($, steps)
+  const source = draw(bar.percent, bar.isDone, Math.max(1, list.total), { at: list.done, of: list.workers ?? 0 })
   return (
     <Box flexGrow={1}>
       <ui.Svg

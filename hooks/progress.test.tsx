@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, blinkTimes, fillSeconds, lastPercent, place, settle, stripTags, tally } from './register'
+import { applyPlan, battery, blinkTimes, fillSeconds, lastPercent, place, settle, stripTags, tally } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -390,4 +390,42 @@ test('with a Remote Control client attached, the bar is pinned as the status lin
   surfaces = ['desktop']
   await say($, 'Nearly. [D90%]', 'a3')
   expect(status.at(-1)).toBeUndefined()
+})
+
+test('a step that sends out workers fills a slice as each reports back', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  let spawned = 0
+  on('agent.spawn', ($, e) => ({ model: 'claude-opus-5-5', agentId: (e as { resume?: { agentId: string } }).resume?.agentId ?? `w${++spawned}` }))
+  const ended = (agentId: string) =>
+    $.turn.complete({ reason: 'answer', answer: 'report', durationMs: 1, isAborted: false, turnId: `t-${agentId}`, agentId })
+
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const items = ['a', 'b'].map((content, i) => ({ content, status: i === 0 ? 'completed' : 'in_progress' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  expect(await label($, 'desktop')).toBe('50%')
+  // Four workers out on the second step: each one back is a quarter of it, short of the step's end.
+  for (let i = 0; i < 4; i++) await $.agent.spawn({ prompt: `batch ${i}` })
+  expect(await label($, 'desktop')).toBe('50%')
+  await ended('w1')
+  expect(await label($, 'desktop')).toBe('62.5%')
+  await ended('w2')
+  expect(await label($, 'desktop')).toBe('75%')
+  // A worker woken again is out again, but the bar never moves back.
+  await $.agent.spawn({ prompt: 'one more thing', resume: { agentId: 'w1' } } as never)
+  expect(await label($, 'desktop')).toBe('75%')
+  // A worker's own sub-worker is its business, not a slice of the step.
+  await $.agent.spawn({ prompt: 'helper', parentAgentId: 'w3' } as never)
+  await ended('w3')
+  await ended('w4')
+  expect(await label($, 'desktop')).toBe('87.5%')
+  await ended('w1')
+  expect(await label($, 'desktop')).toBe('95%')
+})
+
+test('the step in progress is cut faintly into a slice per worker', () => {
+  const ticks = (svg: string) => svg.split('data-tick').length - 1
+  expect(ticks(battery(0, 0.5, false, 2, { at: 1, of: 4 }))).toBe(3)
+  expect(ticks(battery(0, 0.5, false, 2, { at: 1, of: 1 }))).toBe(0)
+  expect(ticks(battery(0, 0.5, false, 2))).toBe(0)
 })

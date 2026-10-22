@@ -10,6 +10,8 @@ export type Steps = {
   /** The task list's steps, and how many of them are done; no list is 0 steps. */
   total: number
   done: number
+  /** The workers the step in progress sent out; none is 0, and no list leaves it out. */
+  workers?: number
 }
 
 declare module 'claude-code' {
