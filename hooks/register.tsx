@@ -157,6 +157,11 @@ function format(percent: number): string {
 
 const H = 14
 const PAD = 5 // room around the bar for the gold glow and sparkles
+// The fill's rounded leading edge, across, in the bar's stretched units.
+const FILL_RX = 6
+// The light flowing along a working fill: one band every FLOW_U units, moving one band a FLOW_S.
+const FLOW_U = 160
+const FLOW_S = 1.4
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
 // as SMIL spells it), so a move glides to a stop rather than braking at its end.
@@ -404,7 +409,10 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The fill keeps to its place through the sections' slide, then eases to the new estimate.
   const W = U - 2 * INSET_U
   const move = path('width', [[0, a * W], [LEAD_S, a * W], [reach, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]])
-  const body = `<rect data-fill="" x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" width="${((move ? a : c) * W).toFixed(2)}" fill="url(#ramp)">${move}</rect>`
+  // The fill's leading edge is rounded, a meniscus rather than a cut. While the ask works, a soft
+  // light flows along it, as a loading bar does; a finished ask's fill is still.
+  const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${(H - 2 * inset) / 2}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
+  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : fill('fill="url(#flow)"'))
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
     ? `<animate attributeName="stroke" to="#d9a521" dur="0.25s" begin="${begin.toFixed(3)}s" fill="freeze"/>`
@@ -465,6 +473,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
+${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${LEAD_S}s" repeatCount="indefinite"/></linearGradient>`}
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
@@ -1077,12 +1086,14 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
+  // The drawing on top says what the bar shows now; the one beneath keeps what it last said.
+  top!.alt = `Progress on the current request: ${bar.label}`
   // The module started afresh on a state the person had already seen: draw it as it stands.
   if (fresh && (await read($, shownState)) === stateKey(await read($, progress), list)) top!.settled = true
   const svg = (drawing: Layer) => (
     <ui.Svg
       source={drawing.settled ? played(drawing.source, Infinity) : drawing.source}
-      alt={`Progress on the current request: ${bar.label}`}
+      alt={drawing.alt}
       // With no width of its own the drawing is the browser's default 300px; one wider than any
       // band is held to the band's width, and the drawing lays out inside it at 100%.
       width={4000}
@@ -1094,20 +1105,19 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     />
   )
   // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
-  // shows through until it has. Each is keyed by its drawing, so the one beneath is never mounted
-  // again: it was on top a moment ago, and only its place in the band changes.
+  // shows through until it has. Each is keyed by its drawing and drawn with the same props for as
+  // long as it's mounted, from on top to beneath: a frame whose box changes may be mounted again,
+  // which blanks it.
+  const at = { position: 'absolute' as const, top: 0, left: 0, right: 0 }
   return (
-    <Box flexGrow={1}>
-      {below !== null && <Box key={`d${below.key}`} flexGrow={1}>{svg(below)}</Box>}
-      <Box key={`d${top!.key}`} flexGrow={1} {...(below !== null ? { position: 'absolute' as const, top: 0, left: 0, right: 0 } : {})}>
-        {svg(top!)}
-      </Box>
+    <Box flexGrow={1} height={H + 2 * PAD}>
+      {[below, top].map(l => l !== null && <Box key={`d${l.key}`} {...at}>{svg(l)}</Box>)}
     </Box>
   )
 }
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
@@ -1123,7 +1133,7 @@ function layer(source: string, state: State, of: number) {
   const carriesOn = top !== null && state.n === top.n && state.at === top.at && state.was === state.at && of === top.of
     && state.from === top.to && state.to >= top.to
   below = carriesOn ? top : null
-  top = { key: ++layers, source, to: state.to, n: state.n, at: state.at, of }
+  top = { key: ++layers, source, alt: '', to: state.to, n: state.n, at: state.at, of }
 }
 
 /** What the bar shows now, or null while there's no estimate to show. */

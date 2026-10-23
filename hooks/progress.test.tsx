@@ -12,6 +12,8 @@ const BAND = { component: 'AbovePrompt', props: BAND_PROPS } as const
 const SURVEY = { component: 'AbovePrompt', props: { ...BAND_PROPS, hasSurvey: true } } as const
 const SURFACES = ['terminal', 'desktop'] as const
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] }
+/** A drawing without the working fill's flowing light, the one animation meant to loop. */
+const still = (svg: string) => svg.replace(/<linearGradient id="flow"[\s\S]*?<\/linearGradient>/, '').replace(/<animateTransform[^>]*href="#flow"[^>]*\/>/g, '')
 
 /** Stands in for the engine beneath the plugin: its turns, the hint line under the prompt and the band above it. */
 function engine(on: On) {
@@ -347,7 +349,7 @@ test('the task list cuts the bar into sections, which only the model fills, each
   expect(svg.match(/<clipPath id="sec">(.*?)<\/clipPath>/)![1].match(/<rect /g)!.length).toBe(4)
   // The first step, in progress, is zoomed: its 10% is a tenth of its wide section.
   expect(moveOf(svg)).toEqual([0.065, 0.065])
-  expect(svg).not.toContain('<animate')
+  expect(still(svg)).not.toContain('<animate')
   expect(await label($, 'desktop')).toBe('2.5%')
   // Finishing the first step, then an estimate for the second: the fill crosses the first
   // section's end, and that section blinks, once, as it passes.
@@ -805,7 +807,7 @@ test('every animation runs on the outermost <svg>\'s clock: a nested <svg> holds
   for (const svg of [battery(0.2, 0.7, false), battery(0.6, 1, true, 3, { at: 3, of: 0 }, 2), battery(0.2, 0.375, false, 4, { at: 1, of: 2 }, 0)]) {
     const inner = svg.slice(svg.indexOf('<svg', 1), svg.indexOf('</svg>') + 6)
     expect(inner.length).toBeGreaterThan(0)
-    expect(inner).not.toMatch(/<(animate|animateTransform|animateMotion|set)\b/)
+    expect(still(inner)).not.toMatch(/<(animate|animateTransform|animateMotion|set)\b/)
     const ids = new Set([...svg.matchAll(/\sid="([^"]+)"/g)].map(m => m[1]))
     for (const m of svg.matchAll(/<animate\w* href="#([^"]+)"/g)) expect(ids.has(m[1])).toBe(true)
   }
@@ -886,7 +888,7 @@ test('coming back to a session shows the bar where it stands, unanimated; only a
   await $.session.attach({ surface: 'desktop' } as never)
   const midway = (await source($))!
   // On the step it's on, drawn still: no fill move, no section slide, no blink.
-  expect(midway).not.toMatch(/<(animate|animateTransform|set)\b/)
+  expect(still(midway)).not.toMatch(/<(animate|animateTransform|set)\b/)
   // Away again: the ask finishes.
   await respond($, 2)
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
