@@ -22,7 +22,7 @@
   th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
   th { color: var(--dim); font-weight: 500; }
   tr.on td { background: #30302a; }
-  .eased { color: var(--ok); } .jumped, .stuck { color: var(--bad); } .held, .none { color: var(--dim); } .pending { color: var(--warn); }
+  .eased { color: var(--ok); } .jumped, .stuck, .snaps { color: var(--bad); } .held, .none { color: var(--dim); } .pending { color: var(--warn); }
   #measure { position: absolute; left: -10000px; top: 0; width: 640px; }
   #measure div { height: 24px; width: 640px; }
   code { font-size: 12px; }
@@ -66,6 +66,9 @@ function measure(svg) {
   if (!root || !fill) { host.remove(); return { kind: 'none', note: 'no fill' }; }
   const ends = [...host.querySelectorAll('animate, animateTransform')].map(a => (parseFloat(a.getAttribute('begin')) || 0) + (parseFloat(a.getAttribute('dur')) || 0));
   const end = Math.max(0, ...ends) + 0.1;
+  // The desktop app runs a drawing's clock before it shows it: an animation that begins at 0 is
+  // over by then, so it snaps to its end in the app however it eases here.
+  const atZero = [...host.querySelectorAll('animate, animateTransform, animateMotion, set')].filter(a => !(parseFloat(a.getAttribute('begin')) > 0)).length;
   root.pauseAnimations();
   const samples = [];
   for (let t = 0; t <= end + 1e-9; t += 0.02) {
@@ -73,7 +76,8 @@ function measure(svg) {
     samples.push([t, fill.width.animVal.value]);
   }
   host.remove();
-  return classify(samples);
+  const m = classify(samples);
+  return atZero > 0 && m.kind === 'eased' ? { ...m, kind: 'snaps', atZero } : m;
 }
 
 function classify(samples) {
@@ -111,17 +115,16 @@ for (const s of scenarios) {
 
 // Measure every new drawing once the page has loaded (SMIL clocks don't start before), then publish
 // the results for a reader (window.SIM_RESULTS).
-const PROBE = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="10"><rect data-fill="" width="10" height="10"><animate attributeName="width" values="10;90" dur="1s" fill="freeze"/></rect></svg>';
-// SVG clocks start only once the page has rendered a frame: measure on the second frame after load,
-// and only once a known-good animation reads as eased, so a page that hasn't rendered says so.
-const rendered = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+const PROBE = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="10"><rect data-fill="" width="10" height="10"><animate attributeName="width" values="10;90" begin="0.1s" dur="1s" fill="freeze"/></rect></svg>';
+// SVG clocks start only once the page has rendered a frame: on each rendered frame after load, try a
+// known-good animation, and measure once it reads as eased. Until then the page says it's waiting.
+const clocksStarted = () => new Promise(resolve => {
+  const check = () => (measure(PROBE).kind === 'eased' ? resolve() : requestAnimationFrame(check));
+  requestAnimationFrame(check);
+});
 window.addEventListener('load', async () => {
-  await rendered();
-  if (measure(PROBE).kind !== 'eased') {
-    document.getElementById('summary').textContent = 'Not measured: this page has not rendered, so its SVG clocks have not started. Show the page and reload.';
-    window.SIM_RESULTS = { error: 'clocks not started' };
-    return;
-  }
+  document.getElementById('summary').textContent = 'Waiting for this page to render, which starts its SVG clocks.';
+  await clocksStarted();
   const results = [];
   for (const s of scenarios) for (const [i, f] of s.frames.entries()) {
     if (!f.isNew) continue;
@@ -132,13 +135,13 @@ window.addEventListener('load', async () => {
     const cell = f.row.children[4];
     cell.className = m.kind;
     cell.textContent = m.kind === 'eased' ? `eased ${m.from}→${m.to}, waits ${m.lead}s, takes ${m.took}s`
-      : m.kind === 'jumped' ? `jumped ${m.from}→${m.to}` : m.kind === 'stuck' ? `stuck at ${m.to}: the fill never moves` : m.kind === 'held' ? `drawn at ${m.to}, no move` : m.note;
+      : m.kind === 'snaps' ? `snaps in the app: ${m.atZero} animation(s) begin at 0` : m.kind === 'jumped' ? `jumped ${m.from}→${m.to}` : m.kind === 'stuck' ? `stuck at ${m.to}: the fill never moves` : m.kind === 'held' ? `drawn at ${m.to}, no move` : m.note;
     results.push({ scenario: s.name, step: i + 1, event: f.event, label: f.label, ...m });
   }
   window.SIM_RESULTS = results;
   const moved = results.filter(r => r.kind !== 'held' && r.kind !== 'none');
   const count = k => moved.filter(r => r.kind === k).length;
-  document.getElementById('summary').textContent = `${moved.length} moves measured: ${count('eased')} eased, ${count('jumped')} jumped, ${count('stuck')} stuck.`;
+  document.getElementById('summary').textContent = `${moved.length} moves measured: ${count('eased')} eased, ${count('snaps')} snap in the app, ${count('jumped')} jumped, ${count('stuck')} stuck.`;
   document.title = 'Progress Bar Simulator — measured';
   play();
 });
