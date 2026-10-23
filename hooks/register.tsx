@@ -1122,7 +1122,9 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   )
 }
 
-const ROOM = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}"/>`
+// Not empty: an element with nothing in it may be scrubbed or sized to nothing, and the band's room
+// shrinks with it.
+const ROOM = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible"><rect width="100%" height="${H + 2 * PAD}" fill="none"/></svg>`
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
 type Layer = { key: number; source: string; alt: string; to: number; n: number; at: number; of: number; settled?: boolean }
