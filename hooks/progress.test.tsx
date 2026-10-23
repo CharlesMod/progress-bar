@@ -14,8 +14,8 @@ const SURFACES = ['terminal', 'desktop'] as const
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] }
 /** A drawing without the working fill's flowing light and bubbles, the animations meant to loop. */
 const still = (svg: string) => svg
-  .replace(/<linearGradient id="flow"[\s\S]*?<\/linearGradient>/, '').replace(/<pattern id="bubbles"[\s\S]*?<\/pattern>/, '')
-  .replace(/<animateTransform[^>]*href="#(flow|bubbles)"[^>]*\/>/g, '')
+  .replace(/<linearGradient id="flow"[\s\S]*?<\/linearGradient>/, '').replace(/<pattern id="bubbles\d"[\s\S]*?<\/pattern>/g, '')
+  .replace(/<animateTransform[^>]*href="#(flow|bubbles\d)"[^>]*\/>/g, '')
 
 /** Stands in for the engine beneath the plugin: its turns, the hint line under the prompt and the band above it. */
 function engine(on: On) {
@@ -311,7 +311,7 @@ test('the fill eases from the last estimate to the new one, and the finale plays
   await say($, 'Started. [D20%]', 'a1')
   let svg = (await source($))!
   expect(moveOf(svg)).toEqual([0, 0.2])
-  expect(svg).toMatch(/keySplines="0.4 0 0.2 1(;0.4 0 0.2 1)*"/)
+  expect(svg).toMatch(/keySplines="0.35 0 0.1 1(;0.35 0 0.1 1)*"/)
   expect(svg).toContain('fill="freeze"')
   // Nothing has changed: the band is handed the same drawing, so it keeps the one it has.
   expect(await source($)).toBe(svg)

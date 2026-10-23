@@ -170,33 +170,37 @@ const SPARKS = 11
 const PULSE_S = 1.6
 const PULSE_LAG_S = 0.12
 
-// Bubbles rising through a working fill: one tile of a few dots, BUBBLE_U units across and the
-// fill's height tall, repeated along the bar and moved up one tile a BUBBLE_S. One animated
-// attribute for the lot, so it costs the page next to nothing.
-const BUBBLE_U = 120
-const BUBBLE_S = 2.6
+// Bubbles rising through a working fill, in a few layers, each a tile of bubbles repeated along
+// the bar and moved up one tile a loop: tiles of unlike widths, so the layers' bubbles fall
+// irregularly against each other, and loops of unlike lengths and easings, so they rise at their
+// own speeds, some gathering pace, some slowing. One animated attribute a layer.
+const BUBBLES: { u: number; s: number; ease: string; dots: [number, number, number][] }[] = [
+  { u: 137, s: 2.3, ease: '0.5 0 0.9 0.6', dots: [[18, 0.3, 2], [91, 0.8, 1.4]] },
+  { u: 211, s: 3.7, ease: '0.2 0.5 0.6 1', dots: [[57, 0.15, 2.4], [160, 0.6, 1.2]] },
+  { u: 173, s: 5.1, ease: '0.4 0 0.6 1', dots: [[33, 0.5, 1.6], [122, 0.1, 1.9], [149, 0.85, 1.1]] },
+]
 
-/** The rising bubbles' tile, as a pattern laid over a fill `inset` pixels from the outline. */
-function bubbles(inset: number, begin: string): string {
+/** The rising bubbles' layers, as patterns laid over a fill `inset` pixels from the outline. */
+function bubbles(inset: number, loopAt: (period: number) => string): string {
   const h = H - 2 * inset
-  // Across, in stretched units, a dot is drawn about half again as wide as it is tall, so it
-  // reads round on a bar the band squeezes.
-  // Bubbles: a light ring round a faint, see-through middle.
-  const dots = [[14, 0.3, 2], [47, 0.75, 1.5], [72, 0.15, 2.4], [96, 0.55, 1.3]]
-    // A tile clips what crosses its edge, so each dot is drawn again a tile above and below:
-    // the part cut off one edge shows at the other, and a dot rises through it whole.
-    .flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y! * h + dy).toFixed(2)}" rx="${(r! * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.12" stroke="#fff" stroke-opacity="0.55" stroke-width="0.7" vector-effect="non-scaling-stroke"/>`)).join('')
-  return `<pattern id="bubbles" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${BUBBLE_U}" height="${h}">${dots}<animateTransform attributeName="patternTransform" type="translate" from="0 0" to="0 ${-h}" dur="${BUBBLE_S}s" begin="${begin}" repeatCount="indefinite"/></pattern>`
+  return BUBBLES.map(({ u, s, ease, dots }, i) => {
+    // A bubble: a light ring round a faint, see-through middle. Across, in stretched units, it is
+    // drawn about half again as wide as it is tall, so it reads round on a bar the band squeezes.
+    // A tile clips what crosses its edge, so each is drawn again a tile above and below: the part
+    // cut off one edge shows at the other, and a bubble rises through it whole.
+    const rings = dots.flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y * h + dy).toFixed(2)}" rx="${(r * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.12" stroke="#fff" stroke-opacity="0.55" stroke-width="0.7" vector-effect="non-scaling-stroke"/>`)).join('')
+    return `<pattern id="bubbles${i}" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${u}" height="${h}">${rings}<animateTransform attributeName="patternTransform" type="translate" values="0 0;0 ${-h}" keyTimes="0;1" calcMode="spline" keySplines="${ease}" dur="${s}s" begin="${loopAt(s)}" repeatCount="indefinite"/></pattern>`
+  }).join('')
 }
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
 // as SMIL spells it), so a move glides to a stop rather than braking at its end.
-const EASE = { x1: 0.4, y1: 0, x2: 0.2, y2: 1 }
+const EASE = { x1: 0.35, y1: 0, x2: 0.1, y2: 1 }
 const KEY_SPLINE = `${EASE.x1} ${EASE.y1} ${EASE.x2} ${EASE.y2}`
 
 /** Seconds the fill takes to ease from `from` to `to`: a short move is quick, a long one unhurried. */
 export function fillSeconds(from: number, to: number): number {
-  return to - from < 0.0005 ? 0 : 0.45 + 1.1 * (to - from)
+  return to - from < 0.0005 ? 0 : 0.6 + 1.5 * (to - from)
 }
 
 /** Where along the ease (0-1 of its time) the fill has covered fraction `k` of its move. */
@@ -447,7 +451,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The fill's leading edge is rounded, a meniscus rather than a cut. While the ask works, a soft
   // light flows along it, as a loading bar does; a finished ask's fill is still.
   const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${FILL_RY}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
-  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : fill('fill="url(#bubbles)"') + fill('fill="url(#flow)"'))
+  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : BUBBLES.map((_, i) => fill(`fill="url(#bubbles${i})"`)).join('') + fill('fill="url(#flow)"'))
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
     ? `<animate attributeName="stroke" to="#d9a521" dur="0.25s" begin="${begin.toFixed(3)}s" fill="freeze"/>`
@@ -521,7 +525,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 ${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${loopAt(FLOW_S)}" repeatCount="indefinite"/></linearGradient>`}
-${isDone ? '' : bubbles(inset, loopAt(BUBBLE_S))}
+${isDone ? '' : bubbles(inset, loopAt)}
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
