@@ -20,6 +20,8 @@ const steps = atom({ plugin: 'progress-bar', key: 'steps' } as const, { total: 0
 const shownState = atom({ plugin: 'progress-bar', key: 'shown' } as const, null as string | null)
 const inView = atom({ plugin: 'progress-bar', key: 'inView' } as const, true)
 // Bumped to draw the band again once a new drawing has had time to load (see drawBand).
+// The task tools' list, kept in the session's state so a reload of the module keeps it.
+const taskState = atom({ plugin: 'progress-bar', key: 'tasks' } as const, [] as [string, string][])
 const tick = atom({ plugin: 'progress-bar', key: 'tick' } as const, 0)
 
 /** The bar's state as one string: two equal ones draw the same bar. */
@@ -683,6 +685,22 @@ const seenWords = new Set<string>()
 // The task tools' list, by task id in the order made, with each task's status. It outlives an
 // ask: the tasks are the session's, and a later ask works on through them.
 const tasks = new Map<string, string>()
+let tasksLoaded = false
+/** The task list as the session's state has it, read once a load of the module. */
+async function loadTasks($: EngineInterface) {
+  if (tasksLoaded) return
+  tasksLoaded = true
+  try {
+    for (const [id, status] of await read($, taskState)) if (!tasks.has(id)) tasks.set(id, status)
+  } catch {
+    // No list kept: the tools' next calls say it afresh.
+  }
+}
+/** The task list moved: kept in the session's state, and drawn. */
+async function tasksMoved($: EngineInterface) {
+  await update($, taskState, () => [...tasks.entries()])
+  await listed($, [...tasks.values()])
+}
 // Whether the ask left work running that will wake it (a background command or agent, a monitor,
 // a scheduled wake-up), since its last wake.
 let waiting = false
@@ -869,6 +887,7 @@ export const register: Register = on => {
       } else if (phase !== 'working') {
         await update($, progress, (): Progress => ({ percent: 0, phase: 'working' }))
         await update($, steps, (): Steps => ({ total: 0, done: 0 }))
+        await loadTasks($)
         startAsk()
         await seen($)
         await syncStatus($)
@@ -1071,8 +1090,9 @@ export const register: Register = on => {
     const result = await next(e)
     const id = (result.result as { task?: { id?: unknown } } | undefined)?.task?.id
     if (e.agentId === undefined && typeof id === 'string') {
+      await loadTasks($)
       tasks.set(id, 'pending')
-      await listed($, [...tasks.values()])
+      await tasksMoved($)
     }
     return result
   }).catch(($, e, next) => next(e))
@@ -1080,9 +1100,10 @@ export const register: Register = on => {
     const result = await next(e)
     const ok = (result.result as { success?: unknown } | undefined)?.success === true
     if (e.agentId === undefined && ok && typeof e.taskId === 'string' && typeof e.status === 'string') {
+      await loadTasks($)
       if (e.status === 'deleted') tasks.delete(e.taskId)
       else tasks.set(e.taskId, e.status)
-      await listed($, [...tasks.values()])
+      await tasksMoved($)
     }
     return result
   }).catch(($, e, next) => next(e))
@@ -1090,11 +1111,12 @@ export const register: Register = on => {
     const result = await next(e)
     const listing = (result.result as { tasks?: unknown } | undefined)?.tasks
     if (e.agentId === undefined && Array.isArray(listing)) {
+      tasksLoaded = true
       tasks.clear()
       for (const t of listing as { id?: unknown; status?: unknown }[]) {
         if (typeof t.id === 'string' && typeof t.status === 'string') tasks.set(t.id, t.status)
       }
-      await listed($, [...tasks.values()])
+      await tasksMoved($)
     }
     return result
   }).catch(($, e, next) => next(e))

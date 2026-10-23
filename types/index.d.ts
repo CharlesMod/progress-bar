@@ -18,6 +18,6 @@ export type Steps = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'progress-bar': { progress: Progress; steps: Steps; shown: string | null; inView: boolean; tick: number }
+    'progress-bar': { progress: Progress; steps: Steps; shown: string | null; inView: boolean; tick: number; tasks: [string, string][] }
   }
 }
