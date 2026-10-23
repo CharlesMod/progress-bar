@@ -529,8 +529,12 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     : ''
   // An empty bar of a working ask isn't left blank: a soft blue glow breathes in its middle,
   // inside the bar, until the first estimate gives the fill something to show.
-  const rings = !isDone && from === 0 && to === 0
-    ? `<rect data-ring="" x="${(U * (1 - GLOW_W) / 2).toFixed(2)}" y="${inset}" width="${(U * GLOW_W).toFixed(2)}" height="${H - 2 * inset}" fill="url(#glowing)" opacity="${GLOW_LOW}"><animate attributeName="opacity" values="${GLOW_LOW};${GLOW_HIGH};${GLOW_LOW}" keyTimes="0;0.5;1" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" dur="${GLOW_S}s" begin="${loopAt(GLOW_S)}" repeatCount="indefinite"/></rect>`
+  // With a list it glows in the step in progress alone, while that step's section is still empty.
+  const step = Math.min(slices.at, n - 1)
+  const glowFrom = (edges[step] ?? 0) * U
+  const glowSpan = ((edges[step + 1] ?? 1) - (edges[step] ?? 0)) * U
+  const rings = !isDone && slices.at < n && to <= slices.at / n + 1e-9 && from <= to
+    ? `<rect data-ring="" x="${(glowFrom + glowSpan * (1 - GLOW_W) / 2).toFixed(2)}" y="${inset}" width="${(glowSpan * GLOW_W).toFixed(2)}" height="${H - 2 * inset}" fill="url(#glowing)" opacity="${GLOW_LOW}"><animate attributeName="opacity" values="${GLOW_LOW};${GLOW_HIGH};${GLOW_LOW}" keyTimes="0;0.5;1" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" dur="${GLOW_S}s" begin="${loopAt(GLOW_S)}" repeatCount="indefinite"/></rect>`
     : ''
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.

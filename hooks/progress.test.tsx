@@ -1082,3 +1082,20 @@ test('a move that takes over from one still under way starts where its fill is, 
   expect(Number(width![1])).toBeLessThan(100)
   expect(svg).toContain('keySplines="0.2 0.3')
 })
+
+test('with a list, the empty step glows in its own section alone, and not once it has some fill', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const items = ['a', 'b', 'c'].map((content, i) => ({ content, status: i === 0 ? 'completed' : i === 1 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  const svg = (await layers($)).at(-1)!
+  const glow = svg.match(/data-ring="" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"/)
+  expect(glow).not.toBeNull()
+  // Inside the second section, which is the zoomed one: well past the first's end, short of the bar's.
+  const edges = layout(3, 1)
+  expect(Number(glow![1])).toBeGreaterThan(edges[1]! * 1000)
+  expect(Number(glow![1]) + Number(glow![2])).toBeLessThan(edges[2]! * 1000)
+  await say($, '[D40%] Halfway into b.', 'a1')
+  expect((await layers($)).at(-1)).not.toContain('data-ring')
+})
