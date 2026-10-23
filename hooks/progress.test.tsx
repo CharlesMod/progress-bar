@@ -860,3 +860,36 @@ test('the band redrawn after the move has played draws it still, so switching ba
   expect(begins.length).toBeGreaterThan(0)
   expect(begins.every(b => b < 0)).toBe(true)
 })
+
+test('coming back to a session shows the bar where it stands, unanimated; only a finished ask\'s finale plays', async ($, on) => {
+  engine(on)
+  on('session.attach', () => ({ clientId: 'desktop' }))
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const items = ['a', 'b', 'c'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  await source($)
+  // Away mid-ask: a step checked off and another tagged, nothing drawn meanwhile.
+  await respond($, 1)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
+  await say($, 'Second step, halfway. [D50%]', 'a1')
+  await $.session.attach({ surface: 'desktop' } as never)
+  const midway = (await source($))!
+  // On the step it's on, drawn still: no fill move, no section slide, no blink.
+  expect(midway).not.toMatch(/<(animate|animateTransform|set)\b/)
+  // Away again: the ask finishes.
+  await respond($, 2)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
+  await respond($, 3)
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up' })
+  await say($, 'Done. [D100%]', 'a2')
+  await $.turn.complete({ reason: 'answer', answer: 'Done.', durationMs: 1, isAborted: false, turnId: 't1' })
+  await $.session.attach({ surface: 'desktop' } as never)
+  const back = (await source($))!
+  // Full and still, with the finale alone playing (and the fade after it).
+  expect(back).not.toMatch(/attributeName="width"/)
+  expect(back).not.toMatch(/values="0;1;0;1;0" dur="0.6s"/)
+  expect(back).toContain('values="0;1;0;1;0;1;0.45"')
+  // The same steps finished in view blink as they fill.
+  expect(battery(0, 1, true, 3, { at: 3, of: 0 }, 0)).toMatch(/values="0;1;0;1;0" dur="0.6s"/)
+})

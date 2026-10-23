@@ -348,7 +348,7 @@ function path(attribute: string, points: readonly [number, number][]): string {
  * it. Explicit colours: the drawing doesn't inherit currentColor, and the band refuses a drawing
  * with a <style> element.
  */
-export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at): string {
+export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true): string {
   const inset = 2.5
   // A place along the bar (0-1) as a share of the drawing's width, for what is drawn unstretched.
   const along = (k: number) => `${(((MARGIN_U + k * U) / SPAN_U) * 100).toFixed(3)}%`
@@ -362,7 +362,8 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const a = onBar(from, before)
   const m1 = onBar(finished, before)
   const reach = LEAD_S + fillSeconds(a, m1)
-  const blinksBefore = blinkTimes(a, m1, n, isDone, before, LEAD_S)
+  // A drawing made on the person's return blinks no step: they finished while the person was away.
+  const blinksBefore = stepBlinks ? blinkTimes(a, m1, n, isDone, before, LEAD_S) : []
   const slideAt = reflow > 0 ? Math.max(reach, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : LEAD_S
   const m2 = onBar(finished, edges)
   const c = onBar(to, edges)
@@ -399,7 +400,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     ? Array.from({ length: slices.of - 1 }, (_, k) =>
       `<rect data-tick="" x="${(((edges[slices.at] ?? 0) + span * (k + 1) / slices.of) * U).toFixed(2)}" y="${inset + 2}" width="1.2" height="${H - 2 * inset - 4}" fill="#8a8a8a" opacity="${reflow > 0 ? 0 : 0.7}">${reflow > 0 ? `<animate attributeName="opacity" to="0.7" dur="0.2s" begin="${fillAt.toFixed(3)}s" fill="freeze"/>` : ''}</rect>`).join('')
     : ''
-  const blinksAfter = blinkTimes(m2, c, n, isDone, edges, fillAt)
+  const blinksAfter = stepBlinks ? blinkTimes(m2, c, n, isDone, edges, fillAt) : []
   const finaleAt = Math.max(total, ...[...blinksBefore, ...blinksAfter].map(({ at }) => at + SECTION_BLINK_S))
   const stroke = 'fill="none" stroke="#8a8a8a" stroke-width="1" vector-effect="non-scaling-stroke"'
   const outlines = n > 1
@@ -570,7 +571,7 @@ let modelTagged = false
 // The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
 // sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
 // The next estimate's drawing eases on from `to`.
-type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number }
+type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number; stepBlinks: boolean }
 let last: State | null = null
 
 // Tool calls since the model's last estimate, and whether this lapse has had its reminder.
@@ -636,19 +637,22 @@ const MIN_MOVE = 0.03
  * moves the fill far enough to see is a new drawing that eases the fill on from the last one. A
  * change to the list alone redraws the bar where it is.
  */
-export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }): string {
+export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, isReturn = false): string {
   const to = percent / 100
   const at = slices.at
   const edges = layout(n, at)
   const unseen = last !== null && last.isDone === isDone && last.n === n && last.at === at && to < 1
     && Math.abs(onBar(to, edges) - onBar(last.to, edges)) < MIN_MOVE
   if (!unseen && (last === null || last.to !== to || last.isDone !== isDone || last.n !== n || last.at !== at)) {
-    const from = last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
+    // A drawing made on the person's return shows where the ask stands, as if it had all happened
+    // in view: no fill moving, no section sliding, no step blinking; only a finished ask's finale.
+    const from = isReturn ? to : last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
     // The sections slide only between two layouts of the same list.
-    const was = last !== null && last.n === n ? last.at : at
-    last = { from, to, isDone, n, at, was }
+    const was = isReturn ? at : last !== null && last.n === n ? last.at : at
+    // How a drawing was made stays its own: a later redraw of it draws it the same.
+    last = { from, to, isDone, n, at, was, stepBlinks: !isReturn }
   }
-  return battery(last.from, last.to, last.isDone, n, slices, last.was)
+  return battery(last.from, last.to, last.isDone, n, slices, last.was, last.stepBlinks)
 }
 
 export const register: Register = on => {
@@ -765,6 +769,9 @@ export const register: Register = on => {
 
   // A Remote Control client joining or leaving changes whether the status line carries the bar.
   on('session.attach', async ($, e, next) => {
+    // The app attaches a session's view when the person comes back to it (and draws nothing while
+    // they're away): the next drawing is made for their return.
+    returning = true
     const joined = await next(e)
     await syncStatus($)
     return joined
@@ -874,6 +881,9 @@ export const register: Register = on => {
 
 let lastError = ''
 
+// Whether the person has just come back to the session, until the band is next drawn.
+let returning = false
+
 // Whether the submission the next turn starts from was a background task's notification.
 let woken = false
 
@@ -960,7 +970,8 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const list = await read($, steps)
   const n = Math.max(1, list.total)
   const of = list.workers ?? 0
-  const drawn = draw(bar.percent, bar.isDone, n, { at: list.done, of })
+  const drawn = draw(bar.percent, bar.isDone, n, { at: list.done, of }, returning)
+  returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
   // Each drawing is shown from where it has got to since it was first drawn, so a redraw never
