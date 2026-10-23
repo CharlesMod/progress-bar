@@ -13,6 +13,25 @@ const progress = atom(
 // section per step, the finished steps fill theirs, and the model's estimate fills the one it's on.
 const steps = atom({ plugin: 'progress-bar', key: 'steps' } as const, { total: 0, done: 0 } as Steps)
 
+// The bar's state the person has seen: written as it changes while the session is in view (the
+// app attaches a session's view while the person is on it, and detaches it when they leave). It is
+// kept in the session's state, which outlives the module: when the app starts the plugin afresh,
+// a drawing of a state already seen is drawn finished rather than played again.
+const shownState = atom({ plugin: 'progress-bar', key: 'shown' } as const, null as string | null)
+const inView = atom({ plugin: 'progress-bar', key: 'inView' } as const, true)
+
+/** The bar's state as one string: two equal ones draw the same bar. */
+function stateKey(p: Progress, st: Steps): string {
+  return `${p.percent}|${p.phase}|${p.quiet === true}|${st.total}|${st.done}|${st.workers ?? 0}`
+}
+
+/** Marks the bar's state now as seen, when the session is in view. */
+async function seen($: EngineInterface) {
+  if (!(await read($, inView))) return
+  const key = stateKey(await read($, progress), await read($, steps))
+  if ((await read($, shownState)) !== key) await update($, shownState, () => key)
+}
+
 // `[D20.9%]`; the leading D is optional so a plain `[20.9%]` counts too.
 const TAG = /\[D?\s*(\d{1,3}(?:\.\d+)?)\s*%\]/g
 
@@ -688,6 +707,7 @@ export const register: Register = on => {
         await update($, progress, (): Progress => ({ percent: 0, phase: 'working' }))
         await update($, steps, (): Steps => ({ total: 0, done: 0 }))
         startAsk()
+        await seen($)
         await syncStatus($)
       }
     }
@@ -761,6 +781,7 @@ export const register: Register = on => {
         if (e.reason === 'answer' && !modelTagged && statuses.length === 0) return { percent: 100, phase: 'done', quiet: true }
         return { ...p, phase: e.reason === 'answer' ? 'done' : 'stopped' }
       })
+      await seen($)
       await syncStatus($)
     }
     return next(e)
@@ -771,12 +792,15 @@ export const register: Register = on => {
     // The app attaches a session's view when the person comes back to it (and draws nothing while
     // they're away): the next drawing is made for their return.
     returning = true
+    await update($, inView, () => true)
     const joined = await next(e)
+    await seen($)
     await syncStatus($)
     return joined
   }).catch(($, e, next) => next(e))
 
   on('session.detach', async ($, e, next) => {
+    await update($, inView, () => false)
     const left = await next(e)
     await syncStatus($)
     return left
@@ -955,6 +979,7 @@ async function redraw($: EngineInterface, tagged: boolean) {
     const at = list.total > 0 ? place(estimate ?? 0, list) : settle(p.phase === 'idle' ? null : p.percent, estimate ?? 0)
     return { percent: at, phase: at >= 100 ? 'done' : 'working' }
   })
+  await seen($)
   await syncStatus($)
 }
 
@@ -973,10 +998,13 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   // they would stand by now, and a new one is made still. Otherwise a drawing is never changed once
   // made: a changed source is a new frame to the app, which blanks the band while it loads.
   if (returning) for (const l of [top, below]) if (l !== null) l.settled = true
+  const fresh = top === null
   const drawn = draw(bar.percent, bar.isDone, n, { at: list.done, of }, returning)
   returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
+  // The module started afresh on a state the person had already seen: draw it as it stands.
+  if (fresh && (await read($, shownState)) === stateKey(await read($, progress), list)) top!.settled = true
   const svg = (drawing: Layer) => (
     <ui.Svg
       source={drawing.settled ? played(drawing.source, Infinity) : drawing.source}
