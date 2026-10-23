@@ -612,6 +612,32 @@ let estimate: number | null = null
 let fresh: number | null = null
 let finishing = false
 
+// The highest real word on the step (the ask, with no list): the model's tags, the history's fill,
+// a command's count, workers back. `estimate` is that or the creep over it, whichever is higher.
+let real: number | null = null
+let creep: number | null = null
+
+// Each tool call done creeps the bar this share of the way to a ceiling CREEP_ROOM of the way from
+// the real word to CREEP_CAP: always a little forward, less each time, never the ceiling, and at
+// most that much ahead of what anything has said.
+const CREEP_RATE = 0.2
+const CREEP_ROOM = 0.25
+const CREEP_CAP = 90
+
+/** Where the creep stands after one more tool call, from where it was and the real word under it. */
+export function crept(was: number | null, said: number | null): number {
+  const base = said ?? 0
+  const from = Math.max(was ?? 0, base)
+  const ceiling = Math.max(from, base + CREEP_ROOM * (CREEP_CAP - base))
+  return from + CREEP_RATE * (ceiling - from)
+}
+
+/** A real word on the step moves the bar forward, never back, under or over the creep. */
+function heard(percent: number) {
+  real = settle(real, percent)
+  estimate = settle(estimate, percent)
+}
+
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
   last = null
@@ -621,6 +647,8 @@ function startAsk() {
   statuses = []
   workers.clear()
   estimate = null
+  real = null
+  creep = null
   fresh = null
   finishing = false
   calls = 0
@@ -736,7 +764,7 @@ export const register: Register = on => {
         responseTags += 1
         modelTagged = true
         const meant = calibrated(percent, (await learned($)).said)
-        estimate = settle(estimate, meant)
+        heard(meant)
         fresh = settle(fresh, meant)
         finishing = percent >= 100
         await redraw($, true)
@@ -834,10 +862,13 @@ export const register: Register = on => {
     const hasList = statuses.length > 0
     const fill = inferred(calls, hasList ? h.steps : h.asks)
     if (fill !== null) {
-      estimate = settle(estimate, fill)
-      await redraw($, false)
+      heard(fill)
     }
-    if (!composed && !instructed && estimate === null) {
+    // And a little more, for the call done, however little anything has said.
+    creep = crept(creep, real)
+    estimate = settle(estimate, creep)
+    await redraw($, false)
+    if (!composed && !instructed && real === null) {
       instructed = true
       return { ...result, context: [...(result.context ?? []), INSTRUCTIONS] }
     }
@@ -916,7 +947,7 @@ const COUNT_CAP = 99
 /** A command's count moves the step in progress (the whole ask, with no list) forward, never back. */
 async function counted($: EngineInterface, percent: number | null) {
   if (percent === null) return
-  estimate = settle(estimate, Math.min(percent, COUNT_CAP))
+  heard(Math.min(percent, COUNT_CAP))
   await redraw($, true)
 }
 
@@ -933,7 +964,7 @@ export function workersBack(sent: ReadonlyMap<string, boolean>): number | null {
 async function workersMoved($: EngineInterface) {
   const share = workersBack(workers)
   if (share === null) return
-  estimate = settle(estimate, share)
+  heard(share)
   await redraw($, false)
 }
 
@@ -953,6 +984,8 @@ async function listed($: EngineInterface, next: string[]) {
     calls = 0
     tags = carried
     estimate = fresh !== null && fresh < 100 ? fresh : null
+    real = estimate
+    creep = null
     workers.clear()
     // A step that starts untagged gets its own reminders, at the first lapse's pace.
     if (estimate === null) {

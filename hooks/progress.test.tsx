@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, crept, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -179,6 +179,12 @@ function nested(svg: string): string {
   return out.replace(/ id="m\d+"/g, '')
 }
 
+/** The bar's label as a number, for a check that allows the creep's few points over the real word. */
+async function near($: Engine, real: number) {
+  const shown = Number((await label($, 'desktop'))!.replace('%', ''))
+  expect(shown >= real && shown <= real + 5).toBe(true)
+}
+
 async function source($: Engine) {
   const band = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
   // the drawing on top is the last; one below it is the last drawing, kept while the new one loads
@@ -194,20 +200,23 @@ test('an estimate moves the bar forward or not at all', () => {
   expect(settle(40, 55)).toBe(55)
 })
 
-test('a task list shows the bar empty before any estimate, tool calls leave it alone, and the wrap-up checks it all off', async ($, on) => {
+test('a task list shows the bar empty before any estimate, each tool call creeps it a little, and the wrap-up checks it all off', async ($, on) => {
   engine(on)
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
+  // A call done with nothing said: a fifth of the way to a quarter of the way to 90%.
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('0%')
-  // A plan is up: the bar is cut into its sections, still empty before the first estimate.
+  expect(await label($, 'desktop')).toBe('4.5%')
+  // A plan is up: the bar is cut into its sections, the step empty before anything is said of it.
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'in_progress' }] })
   expect(await label($, 'desktop')).toBe('0%')
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('0%')
+  expect(await label($, 'desktop')).toBe('4.5%')
+  // A tag is the real word; the next call creeps on from it, a fifth of the way to 37.5%.
   await say($, 'Started. [D20%]', 'a1')
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(await label($, 'desktop')).toBe('20%')
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(await label($, 'desktop')).toBe('23.5%')
   await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' })
   expect(await label($, 'desktop')).toBe('100%')
 })
@@ -756,8 +765,8 @@ test('a step fills from the history as calls go by, is learned when checked off,
   expect(await label($, 'desktop')).toBe('0%')
   await call()
   await call()
-  // Two calls into a step that takes four: half the first of two sections.
-  expect(await label($, 'desktop')).toBe('25%')
+  // Two calls into a step that takes four: half the first of two sections, and the creep's bit.
+  await near($, 25)
   // The first lapse is still said; the history fills the bar after it, so it is not said again.
   const said: number[] = []
   for (let i = 3; i <= 20; i++) if ((await call()).length > 0) said.push(i)
@@ -768,7 +777,7 @@ test('a step fills from the history as calls go by, is learned when checked off,
   // The 20-call step is learned: two calls into the next now read 40% of it, not half.
   await call()
   await call()
-  expect(await label($, 'desktop')).toBe('70%')
+  await near($, 70)
 })
 
 test('with no list an ask fills from the asks before it, and an answered ask is learned', async ($, on) => {
@@ -777,14 +786,14 @@ test('with no list an ask fills from the asks before it, and an answered ask is 
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
   for (let i = 0; i < 5; i++) await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('50%')
+  await near($, 50)
   await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
   // Answered with no word from the model, the bar fills, whatever the history drew.
   expect(await label($, 'desktop')).toBe('100%')
   // The 5-call ask is learned: two calls into the next read a quarter, not a fifth.
   await $.turn.start({ text: 'again', turnId: 't2' })
   for (let i = 0; i < 2; i++) await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('25%')
+  await near($, 25)
 })
 
 test('reads a test runner\'s percent at a line\'s end and a build\'s [n/m] at its start', () => {
@@ -893,4 +902,15 @@ test('coming back to a session shows the bar where it stands, unanimated; only a
   expect(back).toContain('values="0;1;0;1;0;1;0.45"')
   // The same steps finished in view blink as they fill.
   expect(battery(0, 1, true, 3, { at: 3, of: 0 }, 0)).toMatch(/values="0;1;0;1;0" dur="0.6s"/)
+})
+
+test('the creep moves every call, less each time, never past its ceiling, and a real word above it takes over', () => {
+  let c: number | null = null
+  const seen: number[] = []
+  for (let i = 0; i < 40; i++) seen.push(c = crept(c, 20))
+  for (let i = 1; i < seen.length; i++) expect(seen[i]! > seen[i - 1]! && seen[i]! - seen[i - 1]! < seen[1]! - seen[0]! + 1e-9).toBe(true)
+  expect(seen.at(-1)!).toBeLessThan(37.5)
+  expect(seen[4]!).toBeGreaterThan(30)
+  // A real word above the creep: it creeps on from there.
+  expect(crept(30, 60)).toBeGreaterThan(60)
 })
