@@ -1,8 +1,8 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -688,4 +688,81 @@ test('a step left untagged is reminded again, each new step starts the count afr
   expect(third).toEqual([3])
   expect(reminder(true)).toContain('step you have in progress')
   expect(reminder(false)).toContain('whole request')
+})
+
+test('the finished work\'s calls say how far along a step is, short of done, once there is enough of it', () => {
+  // Too little history: nothing inferred.
+  expect(inferred(2, [4, 4])).toBe(null)
+  expect(inferred(0, [4, 4, 4])).toBe(null)
+  // Steps of 4 calls: two calls in is halfway.
+  expect(inferred(2, [4, 4, 4])).toBe(50)
+  // Past every step seen, it holds short of done.
+  expect(inferred(9, [4, 4, 4])).toBe(85)
+  // A step running long is taken for one of the longer ones.
+  expect(inferred(5, [2, 4, 10, 10])).toBe(50)
+})
+
+test('an estimate is read as what such estimates have meant, the more of them the more so', () => {
+  expect(calibrated(50, [])).toBe(50)
+  expect(calibrated(100, [[95, 40]])).toBe(100)
+  // Ten times "50%" came with a fifth of the calls made: "50%" now reads much nearer 20.
+  const pairs = Array.from({ length: 10 }, (): [number, number] => [50, 20])
+  const meant = calibrated(50, pairs)
+  expect(meant).toBeGreaterThan(20)
+  expect(meant).toBeLessThan(35)
+  // Far-off estimates don't count.
+  expect(calibrated(90, pairs)).toBe(90)
+})
+
+test('a finished step adds its calls and its estimates\' meanings, and a stored history is read defensively', () => {
+  const h = learnedFrom(readHistory(undefined), 'steps', 4, [[50, 1], [100, 4]])
+  expect(h).toEqual({ steps: [4], asks: [], said: [[50, 25]] })
+  expect(readHistory({ steps: [3, 'x', 0, 5], said: [[1, 2], [3], 'y'] })).toEqual({ steps: [3, 5], asks: [], said: [[1, 2]] })
+})
+
+test('a step fills from the history as calls go by, is learned when checked off, and the history quiets the repeated reminder', async ($, on) => {
+  engine(on)
+  mock.store(on, { history: { steps: [4, 4, 4], asks: [], said: [] } })
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const items = ['a', 'b'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  expect(await label($, 'desktop')).toBe('0%')
+  await call()
+  await call()
+  // Two calls into a step that takes four: half the first of two sections.
+  expect(await label($, 'desktop')).toBe('25%')
+  // The first lapse is still said; the history fills the bar after it, so it is not said again.
+  const said: number[] = []
+  for (let i = 3; i <= 20; i++) if ((await call()).length > 0) said.push(i)
+  expect(said).toEqual([3])
+  await respond($, 1)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
+  expect(await label($, 'desktop')).toBe('50%')
+  // The 20-call step is learned: two calls into the next now read 40% of it, not half.
+  await call()
+  await call()
+  expect(await label($, 'desktop')).toBe('70%')
+})
+
+test('with no list an ask fills from the asks before it, and an answered ask is learned', async ($, on) => {
+  engine(on)
+  mock.store(on, { history: { steps: [], asks: [10, 10, 10], said: [] } })
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  for (let i = 0; i < 5; i++) await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(await label($, 'desktop')).toBe('50%')
+  await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
+  // The 5-call ask is learned: two calls into the next read a quarter, not a fifth.
+  await $.turn.start({ text: 'again', turnId: 't2' })
+  for (let i = 0; i < 2; i++) await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(await label($, 'desktop')).toBe('25%')
+})
+
+test('reads a test runner\'s percent at a line\'s end and a build\'s [n/m] at its start', () => {
+  expect(progressIn('tests/a.py ....          [ 45%]\ntests/b.py ..   [ 60%]')).toBe(60)
+  expect(progressIn('[12/40] Building CXX object foo.o')).toBe(30)
 })

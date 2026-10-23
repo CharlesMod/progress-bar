@@ -55,6 +55,9 @@ export function lastPercent(texts: readonly string[]): number | null {
 // with `N of M` (after any indent or markup), as a gate's batch lines do.
 const MARKER = /\bPROGRESS\s+(\d+)\s*(?:\/\s*(\d+)|%)/g
 const COUNT = /^(?:\s|<[^>]*>)*(\d+) of (\d+)\b/gm
+// A test runner's `[ 45%]` at a line's end (pytest), and a build's `[12/40]` at its start (ninja).
+const PERCENT_END = /\[\s*(\d{1,3})%\]\s*$/gm
+const BRACKETED = /^\s*\[(\d+)\/(\d+)\]/gm
 
 /** How far (0-100) the last count in a command's output says it has got, or null with none. */
 export function progressIn(text: string): number | null {
@@ -65,6 +68,8 @@ export function progressIn(text: string): number | null {
   }
   for (const m of text.matchAll(MARKER)) consider(m.index!, Number(m[1]), m[2] === undefined ? null : Number(m[2]))
   for (const m of text.matchAll(COUNT)) consider(m.index!, Number(m[1]), Number(m[2]))
+  for (const m of text.matchAll(PERCENT_END)) consider(m.index!, Number(m[1]), null)
+  for (const m of text.matchAll(BRACKETED)) consider(m.index!, Number(m[1]), Number(m[2]))
   return found === null ? null : (found as { percent: number }).percent
 }
 
@@ -359,6 +364,104 @@ ${burst}
 </svg>`
 }
 
+// What the bar learns across sessions, from the person's own work: how many tool calls each
+// finished step took (each finished ask with no list), and what the model's estimates turned out
+// to mean, as pairs of [what it said, the share of the step's calls it had made when it said it].
+export type History = { steps: number[]; asks: number[]; said: [number, number][] }
+const KEEP = 60
+const KEEP_SAID = 300
+// The finished steps (or asks) a fill from calls needs before it is drawn at all.
+const LEARN_MIN = 3
+// A fill from calls alone never claims more than this: only a check-off or the model says done.
+const INFER_CAP = 85
+// How many estimates near one it takes for the learned meaning to count as much as the words.
+const CALIBRATE_WEIGHT = 5
+
+function emptyHistory(): History {
+  return { steps: [], asks: [], said: [] }
+}
+
+/** A stored history, with anything that isn't one dropped. */
+export function readHistory(value: unknown): History {
+  const v = (value ?? {}) as Partial<Record<keyof History, unknown>>
+  const counts = (x: unknown) => (Array.isArray(x) ? x.filter((n): n is number => typeof n === 'number' && n >= 1) : [])
+  const said = Array.isArray(v.said)
+    ? v.said.filter((pair): pair is [number, number] => Array.isArray(pair) && pair.length === 2 && pair.every(n => typeof n === 'number'))
+    : []
+  return { steps: counts(v.steps).slice(-KEEP), asks: counts(v.asks).slice(-KEEP), said: said.slice(-KEEP_SAID) }
+}
+
+/**
+ * How far along (0-100) a step or an ask is after `calls` tool calls, from how many the finished
+ * ones took: the mean share done over those that ran longer than this, so the longer it runs the
+ * longer the work it is taken for. Capped short of done; null until there's enough history.
+ */
+export function inferred(calls: number, took: readonly number[]): number | null {
+  if (took.length < LEARN_MIN || calls < 1) return null
+  const longer = took.filter(k => k > calls)
+  if (longer.length === 0) return INFER_CAP
+  return Math.min(INFER_CAP, (longer.reduce((sum, k) => sum + calls / k, 0) / longer.length) * 100)
+}
+
+/**
+ * What a model's estimate has meant: its words blended with the mean share of calls done when it
+ * said about as much before (within 10), the more such the more the history counts. Done is done.
+ */
+export function calibrated(said: number, pairs: readonly [number, number][]): number {
+  if (said >= 100) return said
+  const near = pairs.filter(([s]) => Math.abs(s - said) <= 10)
+  if (near.length < 1) return said
+  const meant = near.reduce((sum, [, real]) => sum + real, 0) / near.length
+  const weight = near.length / (near.length + CALIBRATE_WEIGHT)
+  return Math.min(99, Math.max(0, weight * meant + (1 - weight) * said))
+}
+
+/** The history with one finished step (or ask) of `took` calls added, and its estimates' pairs. */
+export function learnedFrom(h: History, kind: 'steps' | 'asks', took: number, tags: readonly [number, number][]): History {
+  const said = tags.filter(([s]) => s < 100).map(([s, at]): [number, number] => [s, (100 * at) / took])
+  return {
+    ...h,
+    [kind]: [...h[kind], took].slice(-KEEP),
+    said: [...h.said, ...said].slice(-KEEP_SAID),
+  }
+}
+
+let history: History | null = null
+
+/** The history, read once a load of the module; a store that can't be read is no history. */
+async function learned($: EngineInterface): Promise<History> {
+  if (history === null) {
+    try {
+      history = readHistory(await $.store.get('history'))
+    } catch {
+      history = emptyHistory()
+    }
+  }
+  return history
+}
+
+/** Adds the step (or ask) that just finished to the history, read afresh so other sessions' work is kept. */
+async function learn($: EngineInterface, kind: 'steps' | 'asks') {
+  const took = calls
+  const said = tags
+  calls = 0
+  tags = []
+  if (took < 1) return
+  try {
+    history = learnedFrom(readHistory(await $.store.get('history')), kind, took, said)
+    await $.store.set('history', history)
+  } catch {
+    history = learnedFrom(history ?? emptyHistory(), kind, took, said)
+  }
+}
+
+// Tool calls in the step in progress (the ask, with no list), and the model's estimates in it,
+// each with the calls made when it was given.
+let calls = 0
+let tags: [number, number][] = []
+// How many of `tags` the current response gave: a check-off later in it carries them to the step it starts.
+let responseTags = 0
+
 // The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
 // sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
 // The next estimate's drawing eases on from `to`.
@@ -396,6 +499,8 @@ function startAsk() {
   estimate = null
   fresh = null
   finishing = false
+  calls = 0
+  tags = []
 }
 
 /** The list's statuses after one of the desktop app's plan updates. */
@@ -498,8 +603,11 @@ export const register: Register = on => {
       if (percent !== null) {
         untagged = 0
         reminded = false
-        estimate = settle(estimate, percent)
-        fresh = settle(fresh, percent)
+        tags.push([percent, calls])
+        responseTags += 1
+        const meant = calibrated(percent, (await learned($)).said)
+        estimate = settle(estimate, meant)
+        fresh = settle(fresh, meant)
         finishing = percent >= 100
         await redraw($, true)
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
@@ -519,7 +627,10 @@ export const register: Register = on => {
 
   // Each model response starts with no tag of its own.
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId === undefined) fresh = null
+    if (e.agentId === undefined) {
+      fresh = null
+      responseTags = 0
+    }
     return yield* next(e)
   })
 
@@ -531,6 +642,7 @@ export const register: Register = on => {
       workers.set(e.agentId, true)
       await workersMoved($)
     } else if (e.agentId === undefined) {
+      if (e.reason === 'answer' && statuses.length === 0 && (await read($, progress)).phase === 'working') await learn($, 'asks')
       await update($, progress, (p): Progress => {
         if (p.phase !== 'working') return p
         if (p.percent === null) return { percent: null, phase: 'idle' }
@@ -576,14 +688,25 @@ export const register: Register = on => {
     const result = await next(e)
     if (e.agentId !== undefined || 'deny' in result && result.deny !== undefined) return result
     if ((await read($, progress)).phase !== 'working') return result
+    // A call that moves the list starts or ends a step: it is neither work on the one in progress
+    // nor a lapse of it.
+    if (LIST_TOOLS.has(e.tool)) return result
+    calls += 1
+    // The finished work's calls fill the step (the ask) as it goes, under any estimate the model gives.
+    const h = await learned($)
+    const hasList = statuses.length > 0
+    const fill = inferred(calls, hasList ? h.steps : h.asks)
+    if (fill !== null) {
+      estimate = settle(estimate, fill)
+      await redraw($, false)
+    }
     if (!composed && !instructed && estimate === null) {
       instructed = true
       return { ...result, context: [...(result.context ?? []), INSTRUCTIONS] }
     }
-    // A call that moves the list starts or ends a step: it is no lapse of the one in progress.
-    if (LIST_TOOLS.has(e.tool)) return result
     untagged += 1
-    if (untagged < (reminded ? REMIND_AGAIN : REMIND_AFTER)) return result
+    // Once the history fills the bar, a lapse the model lets pass isn't said again.
+    if (untagged < (reminded ? (fill !== null ? Infinity : REMIND_AGAIN) : REMIND_AFTER)) return result
     untagged = 0
     reminded = true
     return { ...result, context: [...(result.context ?? []), reminder(statuses.includes('in_progress'))] }
@@ -683,6 +806,12 @@ async function listed($: EngineInterface, next: string[]) {
   const before = tally(statuses)
   const after = tally(next)
   if (next.indexOf('in_progress') !== statuses.indexOf('in_progress') || after.done !== before.done || after.total !== before.total) {
+    // The response's own tags are for the step it starts, made at its first call.
+    const carried = tags.slice(tags.length - responseTags).map(([s]): [number, number] => [s, 0])
+    tags = tags.slice(0, tags.length - responseTags)
+    if (before.total > 0 && after.done > before.done) await learn($, 'steps')
+    calls = 0
+    tags = carried
     estimate = fresh !== null && fresh < 100 ? fresh : null
     workers.clear()
     // A step that starts untagged gets its own reminders, at the first lapse's pace.
