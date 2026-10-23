@@ -234,16 +234,15 @@ const SPAN_U = U + 2 * MARGIN_U
 /** An eased move of one attribute, `begin` seconds in, or nothing when it doesn't move. */
 function ease(attribute: string, from: number, to: number, seconds: number, begin = 0): string {
   return seconds > 0 && Math.abs(from - to) >= 0.01
-    ? `<animate attributeName="${attribute}" from="${from.toFixed(2)}" to="${to.toFixed(2)}" dur="${seconds}s" begin="${begin.toFixed(3)}s" calcMode="spline" keyTimes="0;1" keySplines="${KEY_SPLINE}" fill="freeze"/>`
+    ? `<animate attributeName="${attribute}" from="${from.toFixed(2)}" to="${to.toFixed(2)}" dur="${seconds}s" begin="${Math.max(MIN_BEGIN_S, begin).toFixed(3)}s" calcMode="spline" keyTimes="0;1" keySplines="${KEY_SPLINE}" fill="freeze"/>`
     : ''
 }
 
-/** One attribute eased through `points` (seconds, value), holding between them, frozen at the last. */
 /**
  * Moves every animation in `markup` out of it, each pointed at the element it animated by an id
- * (one given where the element had none). A nested <svg> runs its animations on a clock of its own
- * that Chromium never starts, so a drawing's animations all go on the outermost <svg>, whose clock
- * starts when the drawing loads, and still drive the elements inside.
+ * (one given where the element had none). A nested <svg> can run its animations on a clock of its
+ * own that a Chromium page doesn't always start, so a drawing's animations all go on the outermost
+ * <svg> and still drive the elements inside.
  */
 export function hoist(markup: string, prefix = 'm'): { markup: string; animations: string } {
   const out: string[] = []
@@ -275,11 +274,24 @@ export function hoist(markup: string, prefix = 'm'): { markup: string; animation
   return { markup: out.join(''), animations: animations.join('\n') }
 }
 
+// The earliest any animation in a drawing begins. The desktop app runs a drawing's clock for a
+// while before it shows the drawing, and an animation that begins at 0 is over (shown at its end)
+// by then; one that begins any later plays from its start, in view.
+export const MIN_BEGIN_S = 0.05
+
+/**
+ * One attribute eased through `points` (seconds, value), holding between them, frozen at the last.
+ * A hold at the start is the animation's begin, never part of it, so it never begins at 0.
+ */
 function path(attribute: string, points: readonly [number, number][]): string {
-  const kept = points.filter(([t], i) => i === 0 || t - points[i - 1]![0] > 1e-6)
+  let kept = points.filter(([t], i) => i === 0 || t - points[i - 1]![0] > 1e-6)
   if (kept.length < 2 || kept.every(([, v]) => Math.abs(v - kept[0]![1]) < 0.005)) return ''
-  const total = kept[kept.length - 1]![0]
-  return `<animate attributeName="${attribute}" values="${kept.map(([, v]) => v.toFixed(2)).join(';')}" keyTimes="${kept.map(([t]) => (t / total).toFixed(4)).join(';')}" calcMode="spline" keySplines="${kept.slice(1).map(() => KEY_SPLINE).join(';')}" dur="${total.toFixed(3)}s" fill="freeze"/>`
+  while (kept.length > 2 && Math.abs(kept[1]![1] - kept[0]![1]) < 0.005) kept = kept.slice(1)
+  const begin = Math.max(MIN_BEGIN_S, kept[0]![0])
+  const shift = begin - kept[0]![0]
+  const end = kept[kept.length - 1]![0] + shift
+  const dur = end - begin
+  return `<animate attributeName="${attribute}" values="${kept.map(([, v]) => v.toFixed(2)).join(';')}" keyTimes="${kept.map(([t]) => ((t + shift - begin) / dur).toFixed(4)).join(';')}" calcMode="spline" keySplines="${kept.slice(1).map(() => KEY_SPLINE).join(';')}" begin="${begin.toFixed(3)}s" dur="${dur.toFixed(3)}s" fill="freeze"/>`
 }
 
 /**

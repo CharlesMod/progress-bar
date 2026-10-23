@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, hoist, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, hoist, MIN_BEGIN_S, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -607,14 +607,14 @@ test('a check-off fills and blinks the step while it is wide, then slides the se
   for (const m of slides) close(Number(m[1]), blinkAt + 0.6, 3)
   // the fill reaches the end of the step in the wide layout, holds through the blink, keeps to that
   // end as the sections slide, then eases into the next step
+  // (the opening hold is the animation's begin, not one of its values)
   const values = svg.match(/<rect data-fill=""[^>]*>.*?values="([\d.;]+)"/)![1]!.split(';').map(v => Number(v) / 994)
-  expect(values.length).toBe(6)
+  expect(values.length).toBe(5)
   close(values[0]!, onBar(0.2, before), 3)
-  close(values[1]!, onBar(0.2, before), 3)
+  close(values[1]!, onBar(0.25, before), 3)
   close(values[2]!, onBar(0.25, before), 3)
-  close(values[3]!, onBar(0.25, before), 3)
-  close(values[4]!, onBar(0.25, after), 3)
-  close(values[5]!, onBar(0.375, after), 3)
+  close(values[3]!, onBar(0.25, after), 3)
+  close(values[4]!, onBar(0.375, after), 3)
   // a drawing with no check-off doesn't slide
   expect(battery(0.3, 0.35, false, 4, { at: 1, of: 0 }, 1)).not.toContain(`dur="${REFLOW_S}s"`)
 })
@@ -633,13 +633,13 @@ test('a bar cut into a new plan fills in from empty, never jumping to its first 
 
 test('every move waits a moment before it starts, so it plays once the frame is on screen', () => {
   const svg = nested(battery(0, 0.3, false))
-  const keyTimes = svg.match(/<rect data-fill=""[^>]*>.*?keyTimes="([\d.;]+)"[^>]*dur="([\d.]+)s"/)!
-  const [, second] = keyTimes[1]!.split(';').map(Number)
-  close(second! * Number(keyTimes[2]), LEAD_S, 3)
-  // the fill holds at empty for that moment
+  // the moment is the animation's begin; the fill is drawn empty until then
+  const begin = svg.match(/<rect data-fill=""[^>]*>.*?begin="([\d.]+)s"/)!
+  close(Number(begin[1]), LEAD_S, 3)
   const values = svg.match(/<rect data-fill=""[^>]*>.*?values="([\d.;]+)"/)![1]!.split(';').map(Number)
   expect(values[0]).toBe(0)
-  expect(values[1]).toBe(0)
+  expect(values[1]).toBeGreaterThan(0)
+  expect(svg).toMatch(/<rect data-fill=""[^>]*width="0.00"/)
   // a drawing where nothing moves has no animation at all
   expect(battery(0.3, 0.3, false)).not.toContain('attributeName="width"')
 })
@@ -808,4 +808,19 @@ test('hoisting gives an animated element an id, keeps one it has, and leaves the
   const { markup, animations } = hoist('<g><rect x="1"><animate attributeName="x" to="2"/></rect><rect id="k"><set attributeName="y" to="1"/></rect><use href="#s"/></g>')
   expect(markup).toBe('<g><rect id="m0" x="1"></rect><rect id="k"></rect><use href="#s"/></g>')
   expect(animations).toBe('<animate href="#m0" attributeName="x" to="2"/>\n<set href="#k" attributeName="y" to="1"/>')
+})
+
+test('no animation in a drawing begins at 0: each begins late enough to play in view', () => {
+  const drawings = [
+    battery(0, 0.2, false), battery(0.2, 0.7, false), battery(0.7, 1, true),
+    battery(0.2, 0.375, false, 4, { at: 1, of: 2 }, 0), battery(0.6, 1, true, 3, { at: 3, of: 0 }, 2),
+  ]
+  for (const svg of drawings) {
+    const animations = [...svg.matchAll(/<(animate|animateTransform|animateMotion|set)\b[^>]*>/g)].map(m => m[0])
+    expect(animations.length).toBeGreaterThan(0)
+    for (const a of animations) {
+      const begin = a.match(/\bbegin="([\d.]+)s"/)
+      expect(begin === null ? a : Number(begin[1]) >= MIN_BEGIN_S).toBe(true)
+    }
+  }
 })
