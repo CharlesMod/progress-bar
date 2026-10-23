@@ -157,8 +157,10 @@ function format(percent: number): string {
 
 const H = 14
 const PAD = 5 // room around the bar for the gold glow and sparkles
-// The fill's rounded leading edge, across, in the bar's stretched units.
-const FILL_RX = 6
+// The fill's rounded corners, across (in the bar's stretched units) and down (in pixels): the
+// outline's own corners, less the gap between them, so the fill's ends sit inside it evenly.
+const FILL_RX = 3
+const FILL_RY = 2.5
 // The light flowing along a working fill: one band every FLOW_U units, moving one band a FLOW_S.
 const FLOW_U = 160
 const FLOW_S = 1.4
@@ -413,7 +415,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const move = path('width', [[0, a * W], [LEAD_S, a * W], [reach, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]])
   // The fill's leading edge is rounded, a meniscus rather than a cut. While the ask works, a soft
   // light flows along it, as a loading bar does; a finished ask's fill is still.
-  const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${(H - 2 * inset) / 2}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
+  const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${FILL_RY}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
   const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : fill('fill="url(#flow)"'))
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
