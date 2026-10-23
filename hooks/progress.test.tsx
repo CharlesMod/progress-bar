@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, hoist, MIN_BEGIN_S, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -298,7 +298,7 @@ test('the fill eases from the last estimate to the new one, and the finale plays
   await say($, 'Started. [D20%]', 'a1')
   let svg = (await source($))!
   expect(moveOf(svg)).toEqual([0, 0.2])
-  expect(svg).toMatch(/keySplines="0.42 0 0.58 1(;0.42 0 0.58 1)*"/)
+  expect(svg).toMatch(/keySplines="0.4 0 0.2 1(;0.4 0 0.2 1)*"/)
   expect(svg).toContain('fill="freeze"')
   // Nothing has changed: the band is handed the same drawing, so it keeps the one it has.
   expect(await source($)).toBe(svg)
@@ -823,4 +823,40 @@ test('no animation in a drawing begins at 0: each begins late enough to play in 
       expect(begin === null ? a : Number(begin[1]) >= MIN_BEGIN_S).toBe(true)
     }
   }
+})
+
+test('a drawing shown again later carries on from where it got to, and is still once it has played', () => {
+  const svg = battery(0.2, 0.7, false)
+  const end = endOf(svg)
+  expect(end).toBeGreaterThan(0.5)
+  const begins = (x: string) => [...x.matchAll(/\bbegin="(-?[\d.]+)s"/g)].map(m => Number(m[1]))
+  // Shown again mid-move: the move's begin is already past, so it shows partway, not from its start.
+  expect(Math.min(...begins(played(svg, 0.5)))).toBeLessThan(0)
+  // Shown again after it has played: every animation is over, and later redraws are the same string.
+  expect(endOf(played(svg, end + 5))).toBeLessThanOrEqual(0)
+  expect(played(svg, end + 5)).toBe(played(svg, end + 50))
+  // One that hasn't begun yet still begins late enough to play in view.
+  const later = played(battery(0.6, 1, true), 0.2)
+  expect(begins(later).filter(b => b > 0).every(b => b >= MIN_BEGIN_S)).toBe(true)
+})
+
+test('a finished ask\'s bar fades out after its finale, and a fresh ask brings it back', () => {
+  const done = fadingOut(battery(0.7, 1, true))
+  const fade = done.match(/<animate attributeName="opacity" from="1" to="0" begin="([\d.]+)s"/)!
+  expect(Number(fade[1])).toBeGreaterThan(endOf(battery(0.7, 1, true)))
+})
+
+test('the band redrawn after the move has played draws it still, so switching back to a session doesn\'t replay it', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: 1000 })
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Going. [D60%]', 'a1')
+  const first = (await source($))!
+  expect(first).toContain('attributeName="width"')
+  await clock.advance(10_000)
+  const again = (await source($))!
+  // The same drawing, every animation begun long enough ago to be over: nothing plays again.
+  const begins = [...again.matchAll(/\bbegin="(-?[\d.]+)s"/g)].map(m => Number(m[1]))
+  expect(begins.length).toBeGreaterThan(0)
+  expect(begins.every(b => b < 0)).toBe(true)
 })

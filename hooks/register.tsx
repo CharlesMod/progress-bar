@@ -126,13 +126,14 @@ function format(percent: number): string {
 const H = 14
 const PAD = 5 // room around the bar for the gold glow and sparkles
 
-// The fill's easing, in and out: a cubic bezier from time to distance, as SMIL spells it.
-const EASE = { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }
+// The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
+// as SMIL spells it), so a move glides to a stop rather than braking at its end.
+const EASE = { x1: 0.4, y1: 0, x2: 0.2, y2: 1 }
 const KEY_SPLINE = `${EASE.x1} ${EASE.y1} ${EASE.x2} ${EASE.y2}`
 
 /** Seconds the fill takes to ease from `from` to `to`: a short move is quick, a long one unhurried. */
 export function fillSeconds(from: number, to: number): number {
-  return to - from < 0.0005 ? 0 : 0.35 + 0.9 * (to - from)
+  return to - from < 0.0005 ? 0 : 0.45 + 1.1 * (to - from)
 }
 
 /** Where along the ease (0-1 of its time) the fill has covered fraction `k` of its move. */
@@ -278,6 +279,46 @@ export function hoist(markup: string, prefix = 'm'): { markup: string; animation
 // while before it shows the drawing, and an animation that begins at 0 is over (shown at its end)
 // by then; one that begins any later plays from its start, in view.
 export const MIN_BEGIN_S = 0.05
+
+/** When a drawing's last animation ends, in seconds from when it is shown. */
+export function endOf(svg: string): number {
+  let end = 0
+  for (const m of svg.matchAll(/<(?:animate|animateTransform|animateMotion|set)\b[^>]*>/g)) {
+    const begin = Number(m[0].match(/\bbegin="(-?[\d.]+)s"/)?.[1] ?? 0)
+    const dur = Number(m[0].match(/\bdur="([\d.]+)s"/)?.[1] ?? 0)
+    end = Math.max(end, begin + dur)
+  }
+  return end
+}
+
+/**
+ * The drawing as it stands `elapsed` seconds after it was first shown: every animation begun that
+ * much earlier, so a redraw (the app draws the band again whenever a turn starts or stops, and
+ * whenever the person comes back to the session) carries on from there rather than playing it all
+ * again. One begun and over by then is drawn finished; one that hasn't begun keeps a begin of at
+ * least MIN_BEGIN_S, so it still plays in view. Past the drawing's end it's the same still string.
+ */
+export function played(svg: string, elapsed: number): string {
+  if (elapsed <= 0) return svg
+  const by = Math.min(elapsed, endOf(svg) + 0.001)
+  return svg.replace(/\bbegin="(-?[\d.]+)s"/g, (_, b: string) => {
+    const at = Number(b) - by
+    return `begin="${(at > 0 ? Math.max(MIN_BEGIN_S, at) : at).toFixed(3)}s"`
+  })
+}
+
+// A finished ask's bar holds this long after its last animation, then fades out over FADE_S, until
+// the next ask brings it back.
+const FADE_HOLD_S = 1.2
+const FADE_S = 0.8
+
+/** The drawing, fading out once its last animation has ended and held a moment. */
+export function fadingOut(svg: string): string {
+  const at = Math.max(MIN_BEGIN_S, endOf(svg) + FADE_HOLD_S)
+  const open = svg.indexOf('>') + 1
+  const close = svg.lastIndexOf('</svg>')
+  return `${svg.slice(0, open)}<g><animate attributeName="opacity" from="1" to="0" begin="${at.toFixed(3)}s" dur="${FADE_S}s" fill="freeze"/>${svg.slice(open, close)}</g>${svg.slice(close)}`
+}
 
 /**
  * One attribute eased through `points` (seconds, value), holding between them, frozen at the last.
@@ -919,11 +960,17 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const list = await read($, steps)
   const n = Math.max(1, list.total)
   const of = list.workers ?? 0
-  const source = draw(bar.percent, bar.isDone, n, { at: list.done, of })
+  const drawn = draw(bar.percent, bar.isDone, n, { at: list.done, of })
+  const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
+  // Each drawing is shown from where it has got to since it was first drawn, so a redraw never
+  // replays it; a drawing first drawn when the person comes back plays then, in view.
+  // With no clock to read, a drawing is drawn as it is.
+  const now = await $.clock.now().catch(() => null)
+  for (const l of [top, below]) if (l !== null && l.shownAt === undefined && now !== null) l.shownAt = now
   const svg = (drawing: Layer) => (
     <ui.Svg
-      source={drawing.source}
+      source={now === null || drawing.shownAt === undefined ? drawing.source : played(drawing.source, (now - drawing.shownAt) / 1000)}
       alt={`Progress on the current request: ${bar.label}`}
       // With no width of its own the drawing is the browser's default 300px; one wider than any
       // band is held to the band's width, and the drawing lays out inside it at 100%.
@@ -949,7 +996,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 }
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; to: number; n: number; at: number; of: number }
+type Layer = { key: number; source: string; to: number; n: number; at: number; of: number; shownAt?: number }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
@@ -977,6 +1024,8 @@ async function shown($: EngineInterface) {
   return {
     percent,
     isDone: phase === 'done' && percent >= 100 && !quiet,
+    // The ask is over and its bar full, finale or none: the bar fades out after it.
+    isOver: phase === 'done' && percent >= 100,
     label: phase === 'stopped' ? `${format(percent)} · stopped` : format(percent),
   }
 }
