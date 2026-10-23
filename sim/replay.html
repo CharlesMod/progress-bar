@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Progress Bar Simulator</title>
+<style>
+  :root { --bg: #1e1e1e; --panel: #262626; --text: #e6e6e6; --dim: #9a9a9a; --line: #3a3a3a; --ok: #3fc77a; --bad: #e0605a; --warn: #d9a521; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0; }
+  p { margin: 4px 0 0; color: var(--dim); }
+  .controls { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; align-items: center; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--dim); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .band { position: relative; height: 24px; margin: 14px 0 8px; }
+  .band iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
+  .now { color: var(--dim); font-size: 13px; min-height: 1.4em; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; }
+  tr.on td { background: #30302a; }
+  .eased { color: var(--ok); } .jumped, .stuck { color: var(--bad); } .held, .none { color: var(--dim); } .pending { color: var(--warn); }
+  #measure { position: absolute; left: -10000px; top: 0; width: 640px; }
+  #measure div { height: 24px; width: 640px; }
+  code { font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Progress Bar Simulator</h1>
+  <p>Each scenario drives the real plugin with scripted tags, tool calls and task lists. The band below mounts each drawing the way the desktop app documents it: a script-less sandboxed frame per drawing, the new one over the last. Every move is also measured from its own live drawing.</p>
+  <div class="controls">
+    <button id="play">Replay all</button>
+    <button id="step">Step</button>
+    <label><input type="checkbox" id="slow"> Slow (4 s a step)</label>
+    <span class="now" id="summary">Measuring…</span>
+  </div>
+  <div id="scenarios"></div>
+</main>
+<div id="measure" aria-hidden="true"></div>
+<script>
+const FRAMES = /*FRAMES*/[];
+const scenarios = [];
+for (const f of FRAMES) {
+  let s = scenarios.find(x => x.name === f.scenario);
+  if (!s) scenarios.push(s = { name: f.scenario, about: f.about, frames: [] });
+  s.frames.push(f);
+}
+
+// Each frame whose top drawing differs from the one before mounts a new drawing: that's a move to measure.
+const topOf = f => f.layers.length ? f.layers[f.layers.length - 1] : null;
+for (const s of scenarios) s.frames.forEach((f, i) => { f.isNew = topOf(f) !== null && topOf(f) !== (i ? topOf(s.frames[i - 1]) : null); });
+
+// Measures a drawing by seeking its own timeline: paused, stepped every 20 ms to its last
+// animation's end, the fill's width read at each point. No real time passes, so the reading is the
+// same whether or not the page is on screen.
+function measure(svg) {
+  const host = document.createElement('div');
+  host.innerHTML = svg;
+  document.getElementById('measure').appendChild(host);
+  const root = host.querySelector('svg');
+  const fill = host.querySelector('rect[data-fill]');
+  if (!root || !fill) { host.remove(); return { kind: 'none', note: 'no fill' }; }
+  const ends = [...host.querySelectorAll('animate, animateTransform')].map(a => (parseFloat(a.getAttribute('begin')) || 0) + (parseFloat(a.getAttribute('dur')) || 0));
+  const end = Math.max(0, ...ends) + 0.1;
+  root.pauseAnimations();
+  const samples = [];
+  for (let t = 0; t <= end + 1e-9; t += 0.02) {
+    root.setCurrentTime(t);
+    samples.push([t, fill.width.animVal.value]);
+  }
+  host.remove();
+  return classify(samples);
+}
+
+function classify(samples) {
+  const w0 = samples[0][1], w1 = samples[samples.length - 1][1];
+  const r = v => Math.round(v * 10) / 10;
+  if (Math.abs(w1 - w0) < 0.5) return { kind: 'held', from: r(w0), to: r(w1) };
+  const between = new Set(samples.filter(([, w]) => (w - w0) * (w - w1) < 0 && Math.abs(w - w0) > 0.3 && Math.abs(w - w1) > 0.3).map(([, w]) => r(w)));
+  const startAt = samples.find(([, w]) => Math.abs(w - w0) > 0.3)?.[0] ?? 0;
+  const endAt = samples.find(([, w]) => Math.abs(w - w1) <= 0.3)?.[0] ?? 0;
+  const kind = between.size >= 4 ? 'eased' : 'jumped';
+  return { kind, from: r(w0), to: r(w1), lead: +startAt.toFixed(2), took: +(endAt - startAt).toFixed(2), steps: between.size };
+}
+
+// The page: a band and a table per scenario.
+const root = document.getElementById('scenarios');
+for (const s of scenarios) {
+  const el = document.createElement('section');
+  el.innerHTML = `<h2></h2><p></p><div class="band"></div><div class="now"></div>
+    <table><thead><tr><th>#</th><th>Event</th><th>Bar</th><th>Drawing</th><th>Motion</th></tr></thead><tbody></tbody></table>`;
+  el.querySelector('h2').textContent = s.name;
+  el.querySelector('p').textContent = s.about;
+  const tbody = el.querySelector('tbody');
+  s.frames.forEach((f, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i + 1}</td><td></td><td></td><td>${f.isNew ? 'new' : f.layers.length ? 'kept' : '—'}</td><td class="pending">${f.isNew ? 'measuring' : ''}</td>`;
+    tr.children[1].textContent = f.event;
+    tr.children[2].textContent = f.label ?? 'no bar';
+    tbody.appendChild(tr);
+    f.row = tr;
+  });
+  s.band = el.querySelector('.band');
+  s.now = el.querySelector('.now');
+  root.appendChild(el);
+}
+
+// Measure every new drawing once the page has loaded (SMIL clocks don't start before), then publish
+// the results for a reader (window.SIM_RESULTS).
+const PROBE = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="10"><rect data-fill="" width="10" height="10"><animate attributeName="width" values="10;90" dur="1s" fill="freeze"/></rect></svg>';
+// SVG clocks start only once the page has rendered a frame: measure on the second frame after load,
+// and only once a known-good animation reads as eased, so a page that hasn't rendered says so.
+const rendered = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+window.addEventListener('load', async () => {
+  await rendered();
+  if (measure(PROBE).kind !== 'eased') {
+    document.getElementById('summary').textContent = 'Not measured: this page has not rendered, so its SVG clocks have not started. Show the page and reload.';
+    window.SIM_RESULTS = { error: 'clocks not started' };
+    return;
+  }
+  const results = [];
+  for (const s of scenarios) for (const [i, f] of s.frames.entries()) {
+    if (!f.isNew) continue;
+    let m = measure(topOf(f));
+    // A new drawing for a new position whose fill never moves is the bar stuck where it was.
+    const before = i ? s.frames[i - 1].label : null;
+    if (m.kind === 'held' && f.label !== before && before !== null) m = { ...m, kind: 'stuck' };
+    const cell = f.row.children[4];
+    cell.className = m.kind;
+    cell.textContent = m.kind === 'eased' ? `eased ${m.from}→${m.to}, waits ${m.lead}s, takes ${m.took}s`
+      : m.kind === 'jumped' ? `jumped ${m.from}→${m.to}` : m.kind === 'stuck' ? `stuck at ${m.to}: the fill never moves` : m.kind === 'held' ? `drawn at ${m.to}, no move` : m.note;
+    results.push({ scenario: s.name, step: i + 1, event: f.event, label: f.label, ...m });
+  }
+  window.SIM_RESULTS = results;
+  const moved = results.filter(r => r.kind !== 'held' && r.kind !== 'none');
+  const count = k => moved.filter(r => r.kind === k).length;
+  document.getElementById('summary').textContent = `${moved.length} moves measured: ${count('eased')} eased, ${count('jumped')} jumped, ${count('stuck')} stuck.`;
+  document.title = 'Progress Bar Simulator — measured';
+  play();
+});
+
+// Replay: mounts each frame's layers in the band, keeping a frame mounted while its drawing stays.
+function mount(s, f) {
+  const keep = new Map([...s.band.children].map(fr => [fr.dataset.src, fr]));
+  const next = [];
+  for (const src of f.layers) {
+    let fr = keep.get(src);
+    if (!fr) {
+      fr = document.createElement('iframe');
+      fr.setAttribute('sandbox', '');
+      fr.dataset.src = src;
+      fr.srcdoc = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden">${src}</body></html>`;
+    }
+    next.push(fr);
+  }
+  [...s.band.children].forEach(fr => { if (!next.includes(fr)) fr.remove(); });
+  next.forEach(fr => s.band.appendChild(fr));
+  s.frames.forEach(x => x.row.classList.toggle('on', x === f));
+  s.now.textContent = `${f.event} — ${f.label ?? 'no bar'}`;
+}
+
+let cursor = 0, timer = null;
+const length = Math.max(...scenarios.map(s => s.frames.length));
+function show(k) { for (const s of scenarios) if (k < s.frames.length) mount(s, s.frames[k]); }
+function play() {
+  clearTimeout(timer);
+  for (const s of scenarios) s.band.replaceChildren();
+  cursor = 0;
+  const go = () => {
+    show(cursor);
+    cursor += 1;
+    // A demo's pace between steps, so each move plays out in view; not part of what's measured.
+    if (cursor < length) timer = setTimeout(go, document.getElementById('slow').checked ? 4000 : 2500);
+  };
+  go();
+}
+document.getElementById('play').onclick = play;
+document.getElementById('step').onclick = () => { clearTimeout(timer); if (cursor >= length) { for (const s of scenarios) s.band.replaceChildren(); cursor = 0; } show(cursor); cursor += 1; };
+</script>
+</body>
+</html>
