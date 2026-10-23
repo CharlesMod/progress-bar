@@ -46,7 +46,7 @@ The person tracks your progress on their latest request with a progress bar, whi
 - While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. A section fills only when its step is checked off, and a message that checks off a step tags the step it starts. With no list, the tag is your estimate for the whole request.
 - The bar only moves forward: a lower estimate than an earlier one leaves it where it is, so don't overshoot early.
 - The bar reads a tag only once the message carrying it has finished streaming. So as soon as you judge the work done, say [D100%] at the very start of the message that says so, before the rest of your final answer, not at its end. If you know the work is done before a last tool call (a final check, a commit), put [D100%] in the update before that call. Leave the tag out of replies to quick questions that take no work.
-- The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
+- The tag is hidden from the person on screen.`
 
 // When the person adds to an ask while it works (or right after stopping it), the model is asked
 // for a fresh estimate; one this far below the bar rolls it back, as the ask has grown. A smaller
@@ -680,8 +680,10 @@ let responseTags = 0
 let modelTagged = false
 // Whether the model's last words to the person, mid-ask, went out with no tag.
 let missed = false
-// Whether this response's tag was read from its stream already, so its stored row isn't read again.
-let stepTagged = false
+// Whether this response's tag was read from its stored row, or from its stream: whichever comes
+// first is heard, and the other passes.
+let rowTagged = false
+let streamTagged = false
 // The model's messages already read, by their words.
 const seenWords = new Set<string>()
 // The task tools' list, by task id in the order made, with each task's status. It outlives an
@@ -924,23 +926,17 @@ export const register: Register = on => {
       const words = stripTags(texts.join('\n')).trim()
       const again = seenWords.has(words)
       seenWords.add(words)
-      if (!again && !stepTagged && percent === null && words !== '' && (await read($, progress)).phase === 'working') {
+      if (!again && !streamTagged && percent === null && words !== '' && (await read($, progress)).phase === 'working') {
         missed = true
         await trace($, `untagged: ${JSON.stringify(words.slice(0, 40))}`)
       }
       if (percent !== null) {
-        if (!stepTagged) await heardTag($, percent, 'row')
-        stepTagged = false
-        // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
-        const content = e.message.content.flatMap(block => {
-          if (block.type !== 'text' || typeof block.text !== 'string') return [block]
-          const text = stripTags(block.text)
-          return text === '' ? [] : [{ ...block, text }]
-        })
-        // A row that was nothing but a tag stays as it was: an empty row isn't valid.
-        if (content.length > 0) {
-          return next({ ...e, message: { ...e.message, content } })
-        }
+        rowTagged = true
+        if (!streamTagged) await heardTag($, percent, 'row')
+      }
+      if (percent !== null) {
+        // The stored row keeps its tag: it is what the model reads back of its own updates, and a
+        // history of untagged ones teaches it to leave the tag out. The screen draws it without.
       }
     }
     return next(e)
@@ -953,14 +949,15 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       fresh = null
       responseTags = 0
-      stepTagged = false
+      rowTagged = false
+      streamTagged = false
     }
     const result = yield* next(e)
     if (e.agentId === undefined && typeof result.answer === 'string') {
       const percent = lastPercent([result.answer])
       if (percent !== null) {
-        stepTagged = true
-        await heardTag($, percent, 'stream')
+        streamTagged = true
+        if (!rowTagged) await heardTag($, percent, 'stream')
       }
     }
     return result
@@ -1143,8 +1140,8 @@ export const register: Register = on => {
     }
   })
 
-  // The tags are for the bar, not the reader: a reply is drawn without them. The stored row loses
-  // them in session.append; this is the live drawing, which the surface makes before that.
+  // The tags are for the bar, not the reader: a reply is drawn without them, though the stored
+  // row keeps them for the model.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const text = stripTags(e.props.text)
     return text === e.props.text ? next(e) : next({ ...e, props: { ...e.props, text } })

@@ -133,11 +133,11 @@ test('a survey has the desktop band to itself', async ($, on) => {
   await ui.unmount()
 })
 
-test('the stored message carries no tag, unless it was nothing but one', async ($, on) => {
+test('the stored message keeps its tag, which the model reads back as its own example', async ($, on) => {
   engine(on)
   await $.turn.start({ text: 'job', turnId: 't1' })
   const stored = await say($, 'Mapped the code. [D42.5%]', 'a1')
-  expect(stored.message?.content).toMatchObject([{ type: 'text', text: 'Mapped the code.' }])
+  expect(stored.message?.content).toMatchObject([{ type: 'text', text: 'Mapped the code. [D42.5%]' }])
   const bare = await say($, '[D60%]', 'a2')
   expect(bare.message?.content).toMatchObject([{ type: 'text', text: '[D60%]' }])
   expect(await label($, 'desktop')).toBe('60%')
