@@ -806,10 +806,12 @@ export const register: Register = on => {
     if (notified) {
       woken = true
       waiting = false
+      await trace($, 'submit: a task notification')
       await counted($, progressIn(e.text))
       return next(e)
     }
     woken = false
+    await trace($, `submit: ${e.origin.kind}${e.command !== undefined ? ' /' + e.command : ''} at ${JSON.stringify(await read($, progress))}`)
     // The person adds to an ask still working, or one they just stopped: the model is asked where
     // it stands now, and its next tag may roll the bar back if the ask has grown a lot.
     const p = await read($, progress)
@@ -826,6 +828,7 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const wasWoken = woken
     woken = false
+    await trace($, `turn.start${e.agentId !== undefined ? ' (agent)' : ''}: text ${e.text === '' ? 'empty' : 'given'}, woken ${wasWoken}, rescoping ${rescoping}, at ${JSON.stringify(await read($, progress))}`)
     if (e.agentId === undefined && e.text !== '' && !wasWoken) {
       const { phase } = await read($, progress)
       // A message right after stopping an ask carries it on, to be re-estimated.
@@ -882,6 +885,7 @@ export const register: Register = on => {
         }
         fresh = settle(fresh, meant)
         finishing = percent >= 100
+        said(`tag ${percent}% (meant ${meant}), rewind ${rewind}, calls ${calls}`)
         await redraw($, true, rewind)
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
         const content = e.message.content.flatMap(block => {
@@ -917,6 +921,7 @@ export const register: Register = on => {
     } else if (e.agentId === undefined) {
       // Learning the ask resets its count, so whether it did any work is read first.
       const worked = calls > 0
+      await trace($, `turn.complete: ${e.reason}, calls ${calls}, tagged ${modelTagged}, finishing ${finishing}, waiting ${waiting}, list ${statuses.length}, at ${JSON.stringify(await read($, progress))}`)
       if (e.reason === 'answer' && statuses.length === 0 && (await read($, progress)).phase === 'working') await learn($, 'asks')
       await update($, progress, (p): Progress => {
         if (p.phase !== 'working') return p
@@ -930,6 +935,7 @@ export const register: Register = on => {
         if (e.reason === 'answer' && waiting) return { ...p, phase: 'done' }
         return e.reason === 'answer' ? { percent: 100, phase: 'done' } : { ...p, phase: 'stopped' }
       })
+      await trace($, `  -> ${JSON.stringify(await read($, progress))}`)
       await seen($)
       await syncStatus($)
     }
@@ -941,6 +947,7 @@ export const register: Register = on => {
     // The app attaches a session's view when the person comes back to it (and draws nothing while
     // they're away): the next drawing is made for their return.
     returning = true
+    await trace($, 'session.attach')
     await update($, inView, () => true)
     const joined = await next(e)
     await seen($)
@@ -949,6 +956,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('session.detach', async ($, e, next) => {
+    await trace($, 'session.detach')
     await update($, inView, () => false)
     const left = await next(e)
     await syncStatus($)
@@ -1057,6 +1065,24 @@ export const register: Register = on => {
 
 let lastError = ''
 
+// A short trace of what the bar decided, kept in the store under TRACE_KEY so a session can be
+// read back after the fact: the turns, the person's messages and what each drawing was. Drawing
+// can't write the store, so its lines wait for the next handler to write them.
+const TRACE_KEY = 'trace'
+const TRACE_KEEP = 300
+let traced: string[] = []
+async function trace($: EngineInterface, line?: string) {
+  if (line !== undefined) traced.push(`${new Date().toISOString().slice(11, 23)} ${line}`)
+  traced = traced.slice(-TRACE_KEEP)
+  try {
+    await $.store.set(TRACE_KEY, traced)
+  } catch {
+    // The trace is a help, never a reason for a hook to fail.
+  }
+}
+let lastMounted = ''
+const said = (line: string) => { traced.push(`${new Date().toISOString().slice(11, 23)} ${line}`) }
+
 // What the bar showed when the person last added to the ask, until the model's next tag.
 let rescoping: number | null = null
 
@@ -1160,7 +1186,9 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const drawn = draw(bar.percent, bar.isDone, n, { at: list.done, of }, returning)
   returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
+  const was = top?.key
   layer(source, last!, of)
+  if (top!.key !== was) said(`draw ${top!.key}: ${bar.label}, done ${bar.isDone}, over ${bar.isOver}, beneath ${below?.key ?? 'none'}, working ${e.props.isWorking}`)
   // A fading drawing fades alone: the one beneath it, kept while it loads, would stay on show once
   // it had gone. The next time the band is drawn, by when the fading one is up and covers it, the
   // one beneath is drawn as the fading one ends, so nothing is left. It stays mounted, as taking it
@@ -1169,6 +1197,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     if (top!.drawn === true) {
       below.source = played(top!.source, Infinity)
       below.over = true
+      said(`draw: ${below.key} beneath drawn faded`)
     } else top!.drawn = true
   }
   // The drawing on top says what the bar shows now; the one beneath keeps what it last said.
@@ -1189,6 +1218,11 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
       isInteractive
     />
   )
+  // What the band mounts, for the trace when it changes: each frame by its drawing, and whether
+  // the one on top is laid over another or alone.
+  const mounted = `${below === null ? '' : `${below.key}${below.settled ? 's' : ''}${below.over ? 'f' : ''} + `}${top!.key}${top!.settled ? 's' : ''}${below !== null ? ' over' : ' alone'}, working ${e.props.isWorking}`
+  if (mounted !== lastMounted) said(`mount ${mounted}`)
+  lastMounted = mounted
   // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
   // shows through until it has. Each is keyed by its drawing, so the one beneath is never mounted
   // again: it was on top a moment ago, and only its place in the band changes.
