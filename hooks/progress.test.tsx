@@ -716,13 +716,18 @@ test('an estimate is read as what such estimates have meant, the more of them th
 
 test('a finished step adds its calls and its estimates\' meanings, and a stored history is read defensively', () => {
   const h = learnedFrom(readHistory(undefined), 'steps', 4, [[50, 1], [100, 4]])
-  expect(h).toEqual({ steps: [4], asks: [], said: [[50, 25]] })
+  expect(h).toEqual({ steps: [4], asks: [], said: [] })
+  // Too short a step says nothing of what its estimates meant; a long enough one does.
+  expect(learnedFrom(readHistory(undefined), 'steps', 8, [[50, 2], [100, 8]]).said).toEqual([[50, 25]])
+  // A quick ask with no list is no guide to the long ones.
+  expect(learnedFrom(readHistory(undefined), 'asks', 3, []).asks).toEqual([])
+  expect(readHistory({ asks: [2, 3, 7] }).asks).toEqual([7])
   expect(readHistory({ steps: [3, 'x', 0, 5], said: [[1, 2], [3], 'y'] })).toEqual({ steps: [3, 5], asks: [], said: [[1, 2]] })
 })
 
 test('a step fills from the history as calls go by, is learned when checked off, and the history quiets the repeated reminder', async ($, on) => {
   engine(on)
-  mock.store(on, { history: { steps: [4, 4, 4], asks: [], said: [] } })
+  mock.store(on, { 'history.2': { steps: [4, 4, 4], asks: [], said: [] } })
   on('prompt.compose', () => ({ sections: [] }))
   on('tool.call', () => ({ result: {} }))
   await $.prompt.compose(COMPOSE)
@@ -750,12 +755,14 @@ test('a step fills from the history as calls go by, is learned when checked off,
 
 test('with no list an ask fills from the asks before it, and an answered ask is learned', async ($, on) => {
   engine(on)
-  mock.store(on, { history: { steps: [], asks: [10, 10, 10], said: [] } })
+  mock.store(on, { 'history.2': { steps: [], asks: [10, 10, 10], said: [] } })
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
   for (let i = 0; i < 5; i++) await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(await label($, 'desktop')).toBe('50%')
   await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1' })
+  // Answered with no word from the model, the bar fills, whatever the history drew.
+  expect(await label($, 'desktop')).toBe('100%')
   // The 5-call ask is learned: two calls into the next read a quarter, not a fifth.
   await $.turn.start({ text: 'again', turnId: 't2' })
   for (let i = 0; i < 2; i++) await $.tool.call({ tool: 'Bash', command: 'ls' })

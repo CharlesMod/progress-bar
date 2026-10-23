@@ -372,6 +372,10 @@ const KEEP = 60
 const KEEP_SAID = 300
 // The finished steps (or asks) a fill from calls needs before it is drawn at all.
 const LEARN_MIN = 3
+// An ask with no list shorter than this is a quick one, no guide to the long asks the bar is for;
+// a step or an ask shorter than CALIBRATE_MIN says too little of what an estimate meant.
+const ASK_MIN = 5
+const CALIBRATE_MIN = 5
 // A fill from calls alone never claims more than this: only a check-off or the model says done.
 const INFER_CAP = 85
 // How many estimates near one it takes for the learned meaning to count as much as the words.
@@ -388,7 +392,11 @@ export function readHistory(value: unknown): History {
   const said = Array.isArray(v.said)
     ? v.said.filter((pair): pair is [number, number] => Array.isArray(pair) && pair.length === 2 && pair.every(n => typeof n === 'number'))
     : []
-  return { steps: counts(v.steps).slice(-KEEP), asks: counts(v.asks).slice(-KEEP), said: said.slice(-KEEP_SAID) }
+  return {
+    steps: counts(v.steps).slice(-KEEP),
+    asks: counts(v.asks).filter(n => n >= ASK_MIN).slice(-KEEP),
+    said: said.slice(-KEEP_SAID),
+  }
 }
 
 /**
@@ -418,21 +426,24 @@ export function calibrated(said: number, pairs: readonly [number, number][]): nu
 
 /** The history with one finished step (or ask) of `took` calls added, and its estimates' pairs. */
 export function learnedFrom(h: History, kind: 'steps' | 'asks', took: number, tags: readonly [number, number][]): History {
-  const said = tags.filter(([s]) => s < 100).map(([s, at]): [number, number] => [s, (100 * at) / took])
+  const said = took < CALIBRATE_MIN ? [] : tags.filter(([s]) => s < 100).map(([s, at]): [number, number] => [s, (100 * at) / took])
+  const kept = kind === 'asks' && took < ASK_MIN ? h[kind] : [...h[kind], took].slice(-KEEP)
   return {
     ...h,
-    [kind]: [...h[kind], took].slice(-KEEP),
+    [kind]: kept,
     said: [...h.said, ...said].slice(-KEEP_SAID),
   }
 }
 
+// Kept under a key of its own: an earlier key's history learned from quick asks and goes unread.
+const HISTORY_KEY = 'history.2'
 let history: History | null = null
 
 /** The history, read once a load of the module; a store that can't be read is no history. */
 async function learned($: EngineInterface): Promise<History> {
   if (history === null) {
     try {
-      history = readHistory(await $.store.get('history'))
+      history = readHistory(await $.store.get(HISTORY_KEY))
     } catch {
       history = emptyHistory()
     }
@@ -448,8 +459,8 @@ async function learn($: EngineInterface, kind: 'steps' | 'asks') {
   tags = []
   if (took < 1) return
   try {
-    history = learnedFrom(readHistory(await $.store.get('history')), kind, took, said)
-    await $.store.set('history', history)
+    history = learnedFrom(readHistory(await $.store.get(HISTORY_KEY)), kind, took, said)
+    await $.store.set(HISTORY_KEY, history)
   } catch {
     history = learnedFrom(history ?? emptyHistory(), kind, took, said)
   }
@@ -461,6 +472,8 @@ let calls = 0
 let tags: [number, number][] = []
 // How many of `tags` the current response gave: a check-off later in it carries them to the step it starts.
 let responseTags = 0
+// Whether the model has tagged this ask at all: a fill from the history is no word of its.
+let modelTagged = false
 
 // The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
 // sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
@@ -501,6 +514,7 @@ function startAsk() {
   finishing = false
   calls = 0
   tags = []
+  modelTagged = false
 }
 
 /** The list's statuses after one of the desktop app's plan updates. */
@@ -605,6 +619,7 @@ export const register: Register = on => {
         reminded = false
         tags.push([percent, calls])
         responseTags += 1
+        modelTagged = true
         const meant = calibrated(percent, (await learned($)).said)
         estimate = settle(estimate, meant)
         fresh = settle(fresh, meant)
@@ -648,7 +663,7 @@ export const register: Register = on => {
         if (p.percent === null) return { percent: null, phase: 'idle' }
         if (e.reason === 'answer' && finishing) return { percent: 100, phase: 'done' }
         // A quick answer that never gave an estimate fills its bar, without the finale.
-        if (e.reason === 'answer' && estimate === null && statuses.length === 0) return { percent: 100, phase: 'done', quiet: true }
+        if (e.reason === 'answer' && !modelTagged && statuses.length === 0) return { percent: 100, phase: 'done', quiet: true }
         return { ...p, phase: e.reason === 'answer' ? 'done' : 'stopped' }
       })
       await syncStatus($)
