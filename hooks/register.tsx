@@ -239,6 +239,42 @@ function ease(attribute: string, from: number, to: number, seconds: number, begi
 }
 
 /** One attribute eased through `points` (seconds, value), holding between them, frozen at the last. */
+/**
+ * Moves every animation in `markup` out of it, each pointed at the element it animated by an id
+ * (one given where the element had none). A nested <svg> runs its animations on a clock of its own
+ * that Chromium never starts, so a drawing's animations all go on the outermost <svg>, whose clock
+ * starts when the drawing loads, and still drive the elements inside.
+ */
+export function hoist(markup: string, prefix = 'm'): { markup: string; animations: string } {
+  const out: string[] = []
+  const animations: string[] = []
+  const open: { at: number; id: string | null }[] = []
+  let next = 0
+  let last = 0
+  for (const m of markup.matchAll(/<(\/?)([a-zA-Z][\w:-]*)([^>]*?)(\/?)>/g)) {
+    out.push(markup.slice(last, m.index))
+    last = m.index! + m[0].length
+    const [tag, closing, name, , selfClosing] = m
+    if (closing) {
+      open.pop()
+      out.push(tag)
+    } else if (selfClosing && /^(animate|animateTransform|animateMotion|set)$/.test(name!) && open.length > 0) {
+      const parent = open[open.length - 1]!
+      if (parent.id === null) {
+        const has = out[parent.at]!.match(/\sid="([^"]+)"/)
+        parent.id = has ? has[1]! : `${prefix}${next++}`
+        if (!has) out[parent.at] = out[parent.at]!.replace(/^<([a-zA-Z][\w:-]*)/, `<$1 id="${parent.id}"`)
+      }
+      animations.push(tag.replace(/^<([a-zA-Z][\w:-]*)/, `<$1 href="#${parent.id}"`))
+    } else {
+      out.push(tag)
+      if (!selfClosing) open.push({ at: out.length - 1, id: null })
+    }
+  }
+  out.push(markup.slice(last))
+  return { markup: out.join(''), animations: animations.join('\n') }
+}
+
 function path(attribute: string, points: readonly [number, number][]): string {
   const kept = points.filter(([t], i) => i === 0 || t - points[i - 1]![0] > 1e-6)
   if (kept.length < 2 || kept.every(([, v]) => Math.abs(v - kept[0]![1]) < 0.005)) return ''
@@ -341,14 +377,8 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
 `
     : ''
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
-<defs>
-<path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
-<filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-<linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
-</defs>
-<g transform="translate(0 ${PAD})">
-<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
+  // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
+  const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
@@ -357,10 +387,19 @@ ${ticks}
 ${blinking}
 ${shine}
 ${flourish}
-</svg>
+</svg>`)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
+<defs>
+<path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
+<filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+</defs>
+<g transform="translate(0 ${PAD})">
+${stretched.markup}
 ${sparkles}
 ${burst}
 </g>
+${stretched.animations}
 </svg>`
 }
 

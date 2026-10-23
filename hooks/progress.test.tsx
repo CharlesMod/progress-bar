@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, hoist, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -161,13 +161,31 @@ test('an interrupted ask keeps its last estimate, marked stopped', async ($, on)
 })
 
 
+/**
+ * A drawing with each hoisted animation put back inside the element it drives, so a test reads an
+ * element's motion where it reads the element.
+ */
+function nested(svg: string): string {
+  let out = svg
+  for (const m of svg.matchAll(/<(animate|animateTransform|animateMotion|set) href="#([^"]+)"([^>]*?)\/>\n?/g)) {
+    out = out.replace(m[0], '')
+    const at = out.indexOf(` id="${m[2]}"`)
+    const end = out.indexOf('>', at)
+    const self = out[end - 1] === '/'
+    const name = out.slice(out.lastIndexOf('<', at) + 1).match(/^[\w:-]+/)![0]
+    const child = `<${m[1]}${m[3]}/>`
+    out = self ? `${out.slice(0, end - 1)}>${child}</${name}>${out.slice(end + 1)}` : `${out.slice(0, end + 1)}${child}${out.slice(end + 1)}`
+  }
+  return out.replace(/ id="m\d+"/g, '')
+}
+
 async function source($: Engine) {
   const band = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
   // the drawing on top is the last; one below it is the last drawing, kept while the new one loads
   const svg = (await band.findAll({ type: 'Svg' })).at(-1)?.props
   await band.unmount()
   expect(svg === undefined || svg.isInteractive === true).toBe(true)
-  return svg?.source as string | undefined
+  return svg === undefined ? undefined : nested(svg.source as string)
 }
 
 test('an estimate moves the bar forward or not at all', () => {
@@ -575,7 +593,7 @@ test('the step in progress takes most of the bar, the others sharing the rest', 
 })
 
 test('a check-off fills and blinks the step while it is wide, then slides the sections, then fills on', () => {
-  const svg = battery(0.2, 0.375, false, 4, { at: 1, of: 0 }, 0)
+  const svg = nested(battery(0.2, 0.375, false, 4, { at: 1, of: 0 }, 0))
   const before = layout(4, 0)
   const after = layout(4, 1)
   // the finished step blinks where it stood, wide
@@ -614,7 +632,7 @@ test('a bar cut into a new plan fills in from empty, never jumping to its first 
 })
 
 test('every move waits a moment before it starts, so it plays once the frame is on screen', () => {
-  const svg = battery(0, 0.3, false)
+  const svg = nested(battery(0, 0.3, false))
   const keyTimes = svg.match(/<rect data-fill=""[^>]*>.*?keyTimes="([\d.;]+)"[^>]*dur="([\d.]+)s"/)!
   const [, second] = keyTimes[1]!.split(';').map(Number)
   close(second! * Number(keyTimes[2]), LEAD_S, 3)
@@ -627,7 +645,7 @@ test('every move waits a moment before it starts, so it plays once the frame is 
 })
 
 test('the drawing sizes itself without calc(), and the finale shine sweeps in plain numbers', () => {
-  const svg = battery(0.6, 1, true, 3, { at: 3, of: 0 }, 2)
+  const svg = nested(battery(0.6, 1, true, 3, { at: 3, of: 0 }, 2))
   // a nested drawing doesn't take a calc() width, so it would overflow the band
   expect(svg).not.toContain('calc(')
   // a percentage x doesn't animate, so the shine sweeps from a number to a number
@@ -772,4 +790,22 @@ test('with no list an ask fills from the asks before it, and an answered ask is 
 test('reads a test runner\'s percent at a line\'s end and a build\'s [n/m] at its start', () => {
   expect(progressIn('tests/a.py ....          [ 45%]\ntests/b.py ..   [ 60%]')).toBe(60)
   expect(progressIn('[12/40] Building CXX object foo.o')).toBe(30)
+})
+
+test('every animation runs on the outermost <svg>\'s clock: a nested <svg> holds none, each one points at its element', () => {
+  for (const svg of [battery(0.2, 0.7, false), battery(0.6, 1, true, 3, { at: 3, of: 0 }, 2), battery(0.2, 0.375, false, 4, { at: 1, of: 2 }, 0)]) {
+    const inner = svg.slice(svg.indexOf('<svg', 1), svg.indexOf('</svg>') + 6)
+    expect(inner.length).toBeGreaterThan(0)
+    expect(inner).not.toMatch(/<(animate|animateTransform|animateMotion|set)\b/)
+    const ids = new Set([...svg.matchAll(/\sid="([^"]+)"/g)].map(m => m[1]))
+    for (const m of svg.matchAll(/<animate\w* href="#([^"]+)"/g)) expect(ids.has(m[1])).toBe(true)
+  }
+  // The fill's own motion is among them.
+  expect(battery(0.2, 0.7, false)).toMatch(/<rect id="(m\d+)" data-fill=""[\s\S]*<animate href="#\1" attributeName="width"/)
+})
+
+test('hoisting gives an animated element an id, keeps one it has, and leaves the rest as it was', () => {
+  const { markup, animations } = hoist('<g><rect x="1"><animate attributeName="x" to="2"/></rect><rect id="k"><set attributeName="y" to="1"/></rect><use href="#s"/></g>')
+  expect(markup).toBe('<g><rect id="m0" x="1"></rect><rect id="k"></rect><use href="#s"/></g>')
+  expect(animations).toBe('<animate href="#m0" attributeName="x" to="2"/>\n<set href="#k" attributeName="y" to="1"/>')
 })
