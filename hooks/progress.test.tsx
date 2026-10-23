@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, crept, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, crept, rescope, ROLLBACK_MIN, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -913,4 +913,41 @@ test('the creep moves every call, less each time, never past its ceiling, and a 
   expect(seen[4]!).toBeGreaterThan(30)
   // A real word above the creep: it creeps on from there.
   expect(crept(30, 60)).toBeGreaterThan(60)
+})
+
+test('a message added mid-ask asks for a fresh estimate; one far below rolls the bar back, a small dip doesn\'t', async ($, on) => {
+  engine(on)
+  on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Most of it. [D70%]', 'a1')
+  expect(await label($, 'desktop')).toBe('70%')
+  // The person adds to it: the model is told what the bar shows and asked again.
+  const sent = (await $.prompt.submit({ text: 'also do the other thing', wait: false, origin: { kind: 'composer' } })) as { context?: readonly string[] }
+  expect(sent.context).toEqual([rescope(70, false)])
+  expect(rescope(70, false)).toContain('70%')
+  // A fresh estimate far below: the ask has grown, and the bar goes back.
+  await respond($, 2)
+  await say($, 'Bigger now. [D35%]', 'a2')
+  expect(await label($, 'desktop')).toBe('35%')
+  // Added to again, and a dip within ROLLBACK_MIN: the bar holds.
+  await $.prompt.submit({ text: 'and a small tweak', wait: false, origin: { kind: 'composer' } })
+  await respond($, 3)
+  await say($, 'Nearly there. [D' + (35 - ROLLBACK_MIN + 5) + '%]', 'a3')
+  expect(await label($, 'desktop')).toBe('35%')
+  // Without the person adding anything, a lower tag never moves the bar back.
+  await say($, 'Hmm. [D10%]', 'a4')
+  expect(await label($, 'desktop')).toBe('35%')
+})
+
+test('a message right after stopping an ask carries it on, to be re-estimated, rather than starting afresh', async ($, on) => {
+  engine(on)
+  on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Halfway. [D50%]', 'a1')
+  await $.turn.complete({ reason: 'interrupted', answer: '', durationMs: 1, isAborted: true, turnId: 't1' })
+  expect(await label($, 'desktop')).toBe('50% · stopped')
+  const sent = (await $.prompt.submit({ text: 'actually, change course', wait: false, origin: { kind: 'composer' } })) as { context?: readonly string[] }
+  expect(sent.context?.length).toBe(1)
+  await $.turn.start({ text: 'actually, change course', turnId: 't2' })
+  expect(await label($, 'desktop')).toBe('50%')
 })

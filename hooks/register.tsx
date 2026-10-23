@@ -44,6 +44,19 @@ The person tracks your progress on their latest request with a progress bar. Eac
 - When you finish, end your final message with [D100%]. Leave the tag out of replies to quick questions that take no work.
 - The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
 
+// When the person adds to an ask while it works (or right after stopping it), the model is asked
+// for a fresh estimate; one this far below the bar rolls it back, as the ask has grown. A smaller
+// drop is the usual noise, and the bar holds.
+export const ROLLBACK_MIN = 15
+
+/** The note the model gets beside the person's message, with what the bar shows now. */
+export function rescope(shown: number, hasList: boolean): string {
+  const at = `${Math.round(shown)}%`
+  return hasList
+    ? `The person added to their request while you were working on it. The progress bar shows ${at} through your task list. If what they asked for adds work, update the list, and in your next update to them give a fresh tag like [D40%] for the step you then have in progress.`
+    : `The person added to their request while you were working on it. The progress bar shows ${at}. In your next update to them, give a fresh tag like [D40%] for where the whole request now stands, counting any new work they asked for: if it is much more than was left, a lower estimate is right, and the bar goes back to it.`
+}
+
 // After this many tool calls in a row with no estimate, the next result carries a reminder; one
 // the model lets pass is said again after this many more, while the step (or the ask) goes on.
 const REMIND_AFTER = 3
@@ -717,8 +730,15 @@ export const register: Register = on => {
     if (notified) {
       woken = true
       await counted($, progressIn(e.text))
-    } else {
-      woken = false
+      return next(e)
+    }
+    woken = false
+    // The person adds to an ask still working, or one they just stopped: the model is asked where
+    // it stands now, and its next tag may roll the bar back if the ask has grown a lot.
+    const p = await read($, progress)
+    if ((p.phase === 'working' || p.phase === 'stopped') && e.command === undefined && e.isMeta !== true && e.text.trim() !== '') {
+      rescoping = p.percent ?? 0
+      return next({ ...e, context: [...(e.context ?? []), rescope(rescoping, statuses.length > 0)] })
     }
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -731,7 +751,11 @@ export const register: Register = on => {
     woken = false
     if (e.agentId === undefined && e.text !== '' && !wasWoken) {
       const { phase } = await read($, progress)
-      if (phase !== 'working') {
+      // A message right after stopping an ask carries it on, to be re-estimated.
+      if (phase === 'stopped' && rescoping !== null) {
+        await update($, progress, (p): Progress => ({ ...p, phase: 'working' }))
+        await syncStatus($)
+      } else if (phase !== 'working') {
         await update($, progress, (): Progress => ({ percent: 0, phase: 'working' }))
         await update($, steps, (): Steps => ({ total: 0, done: 0 }))
         startAsk()
@@ -764,10 +788,24 @@ export const register: Register = on => {
         responseTags += 1
         modelTagged = true
         const meant = calibrated(percent, (await learned($)).said)
-        heard(meant)
+        // The first tag after the person added to the ask: well below the bar, the bar goes back.
+        let rewind = false
+        if (rescoping !== null) {
+          const list = tally(statuses)
+          const now = (await read($, progress)).percent ?? 0
+          rewind = (list.total > 0 ? place(meant, list) : meant) < now - ROLLBACK_MIN
+          rescoping = null
+        }
+        if (rewind) {
+          real = meant
+          estimate = meant
+          creep = null
+        } else {
+          heard(meant)
+        }
         fresh = settle(fresh, meant)
         finishing = percent >= 100
-        await redraw($, true)
+        await redraw($, true, rewind)
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
         const content = e.message.content.flatMap(block => {
           if (block.type !== 'text' || typeof block.text !== 'string') return [block]
@@ -935,6 +973,9 @@ export const register: Register = on => {
 
 let lastError = ''
 
+// What the bar showed when the person last added to the ask, until the model's next tag.
+let rescoping: number | null = null
+
 // Whether the person has just come back to the session, until the band is next drawn.
 let returning = false
 
@@ -1003,13 +1044,13 @@ async function listed($: EngineInterface, next: string[]) {
  * none, the estimate for the whole ask, only ever forward. A list change alone moves a bar that is
  * working; a tag moves any, a continuation's carrying on from where it was.
  */
-async function redraw($: EngineInterface, tagged: boolean) {
+async function redraw($: EngineInterface, tagged: boolean, rewind = false) {
   const list = tally(statuses)
   await update($, steps, (): Steps => ({ ...list, workers: workers.size }))
   await update($, progress, (p): Progress => {
     if (!tagged && p.phase !== 'working') return p
     if (p.percent === null && estimate === null && list.total < 1) return p
-    const at = list.total > 0 ? place(estimate ?? 0, list) : settle(p.phase === 'idle' ? null : p.percent, estimate ?? 0)
+    const at = list.total > 0 ? place(estimate ?? 0, list) : rewind ? estimate ?? 0 : settle(p.phase === 'idle' ? null : p.percent, estimate ?? 0)
     return { percent: at, phase: at >= 100 ? 'done' : 'working' }
   })
   await seen($)
