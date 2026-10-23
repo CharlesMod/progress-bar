@@ -476,7 +476,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     : ''
   const blinksAfter = stepBlinks ? blinkTimes(m2, c, n, isDone, edges, fillAt) : []
   const finaleAt = Math.max(total, ...[...blinksBefore, ...blinksAfter].map(({ at }) => at + SECTION_BLINK_S))
-  const stroke = 'fill="none" stroke="#8a8a8a" stroke-width="1" vector-effect="non-scaling-stroke"'
+  const stroke = 'data-outline="" fill="none" stroke="#8a8a8a" stroke-width="1" vector-effect="non-scaling-stroke"'
   const outlines = n > 1
     ? Array.from({ length: n }, (_, i) => section(i, 0.5, `y="0.5" height="${H - 1}" rx="${n > 6 ? 3.5 : 5}" ry="${n > 6 ? 3 : 4}" ${stroke}`, outlineAt(finaleAt))).join('')
     : `<rect x="0.5" y="0.5" width="${U - 1}" height="${H - 1}" rx="5" ry="4" ${stroke}>${outlineAt(finaleAt)}</rect>`
@@ -1261,7 +1261,8 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   if (below !== null && !below.retired) {
     if (top!.loaded === true) {
       // The copy runs as the new one does, a moment behind it, so its fill never shows ahead.
-      below = { ...below, key: ++layers, source: played(top!.source, top!.after! / 1000 - BEHIND_S), settled: false, retired: true }
+      // Without the outlines: two of them a moment apart, as a slide moves them, shimmer.
+      below = { ...below, key: ++layers, source: outlineless(played(top!.source, top!.after! / 1000 - BEHIND_S)), settled: false, retired: true }
       said(`draw ${below.key}: beneath ${top!.key}, a copy behind it`)
     } else if (!top!.timed) {
       const laid = top!
@@ -1321,6 +1322,17 @@ function numbered(svg: string, l: Layer): string {
   if (!NUMBERED) return svg
   const at = svg.lastIndexOf('</svg>')
   return `${svg.slice(0, at)}<text x="100%" dx="${-4 - (l.key % 5) * 16}" y="${PAD + H - 4}" font-size="6" font-family="sans-serif" fill="#999" text-anchor="end">${l.key}${l.retired ? 'r' : ''}</text>${svg.slice(at)}`
+}
+
+/** A drawing without its outlines, and the hoisted animations that drove them. */
+export function outlineless(svg: string): string {
+  const ids: string[] = []
+  const out = svg.replace(/<rect ([^>]*)data-outline=""[^>]*>[\s\S]*?<\/rect>/g, tag => {
+    const id = tag.match(/\sid="([^"]+)"/)
+    if (id) ids.push(id[1]!)
+    return ''
+  })
+  return ids.reduce((s, id) => s.replace(new RegExp(`<(?:animate|animateTransform|set)\\b[^>]*href="#${id}"[^>]*/>`, 'g'), ''), out)
 }
 
 // How long a new drawing is given to load before the one beneath it is swapped out.

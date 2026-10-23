@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, crept, rescope, ROLLBACK_MIN, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, crept, outlineless, rescope, ROLLBACK_MIN, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -979,7 +979,8 @@ test('an untagged answer after real work plays the finale, and a fading bar lets
   expect(after[0]).not.toBe(first[0])
   // A copy of the one on top, a moment behind it: the finale and the fade included.
   expect(after[0]).toContain('#ffd54a')
-  expect(after[0]!.replace(/begin="-?[\d.]+s"/g, '')).toBe(first[1]!.replace(/begin="-?[\d.]+s"/g, ''))
+  expect(after[0]!.replace(/begin="-?[\d.]+s"/g, '')).toBe(outlineless(first[1]!).replace(/begin="-?[\d.]+s"/g, ''))
+  expect(after[0]).not.toContain('data-outline')
 })
 
 test('a request interrupted, carried on by the person\'s message, then answered with no tag plays the finale', async ($, on) => {
