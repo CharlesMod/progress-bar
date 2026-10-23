@@ -69,7 +69,7 @@ function scenario(name: string, about: string, store: Record<string, unknown> | 
       },
       snap: async event => {
         const ui = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
-        const svgs = (await ui.findAll({ type: 'Svg' })).filter(el => el.props.isInteractive)
+        const svgs = (await ui.findAll({ type: 'Svg' })).filter(el => el.props.alt !== '')
         // The band's tree lists the drawing beneath first and the one on top last.
         const layers = svgs.map(el => String(el.props.source))
         const label = svgs.length > 0 ? String(svgs.at(-1)!.props.alt).replace(/^.*: /, '') : null

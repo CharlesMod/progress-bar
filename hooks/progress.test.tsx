@@ -558,7 +558,7 @@ test('a background task\'s notification moves the bar and does not start a new a
 
 async function layers($: Engine) {
   const band = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
-  const found = (await band.findAll({ type: 'Svg' })).filter(svg => svg.props.isInteractive).map(svg => svg.props.source as string)
+  const found = (await band.findAll({ type: 'Svg' })).filter(svg => svg.props.alt !== '').map(svg => svg.props.source as string)
   await band.unmount()
   return found
 }

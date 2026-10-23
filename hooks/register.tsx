@@ -385,7 +385,9 @@ function path(attribute: string, points: readonly [number, number][]): string {
  * with a <style> element.
  */
 export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true): string {
-  const inset = 2.5
+  // Whole pixels, so the fill's top and bottom edges are crisp: a half-pixel edge is drawn half
+  // see-through, and where the drawing beneath shows through it, the fill looks a pixel thicker.
+  const inset = 3
   // A place along the bar (0-1) as a share of the drawing's width, for what is drawn unstretched.
   const along = (k: number) => `${(((MARGIN_U + k * U) / SPAN_U) * 100).toFixed(3)}%`
   const edges = layout(n, slices.at)
@@ -1111,13 +1113,16 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const at = { position: 'absolute' as const, top: 0, left: 0, right: 0 }
   return (
     <Box flexGrow={1}>
-      {/* An empty image holds the band's height in pixels (a Box's height counts rows), as the
-          drawings over it are all placed absolutely. */}
-      <ui.Svg key="room" source={`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="${H + 2 * PAD}"/>`} alt="" width={1} height={H + 2 * PAD} />
+      {/* An empty drawing, laid out as the drawings are, holds the band's room (a Box's height
+          counts rows), as the drawings over it are all placed absolutely. It never changes, so its
+          frame is never loaded again. */}
+      <ui.Svg key="room" source={ROOM} alt="" width={4000} height={H + 2 * PAD} isInteractive />
       {[below, top].map(l => l !== null && <Box key={`d${l.key}`} {...at}>{svg(l)}</Box>)}
     </Box>
   )
 }
+
+const ROOM = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}"/>`
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
 type Layer = { key: number; source: string; alt: string; to: number; n: number; at: number; of: number; settled?: boolean }
