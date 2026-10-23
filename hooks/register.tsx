@@ -1323,6 +1323,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     if (top!.settled === true) top!.gone = true
     if (top!.gone === true) {
       said(`band: ${top!.key} faded, the band left to the engine`)
+      anchor = null
       return next(e)
     }
     if (!top!.fading) {
@@ -1384,15 +1385,21 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const mounted = `${below === null ? '' : `${below.key}${below.settled ? 's' : ''}${below.retired ? 'r' : ''} + `}${top!.key}${top!.settled ? 's' : ''}${below !== null ? ' over' : ' alone'}, working ${e.props.isWorking}`
   if (mounted !== lastMounted) said(`mount ${mounted}`)
   lastMounted = mounted
-  // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
-  // shows through until it has. Each is keyed by its drawing, so the one beneath is never mounted
-  // again: it was on top a moment ago, and only its place in the band changes.
+  // The band's height is held by an anchor: the bar's outline, drawn faintly where the real one
+  // lies, mounted once a showing of the bar and never changed, so it never reloads. The app sizes
+  // the band by what its drawing in flow shows, so a drawing in flow that was swapped out (as the
+  // one beneath is) loaded blank and let the band collapse a moment, moving the chat; one showing
+  // nothing at all drew the bar as a sliver. Every drawing floats over the anchor, each keyed by
+  // its drawing and drawn with the same props while mounted; the last stays beneath the new one
+  // while it loads.
+  if (anchor === null) anchor = ++layers
+  const over = { position: 'absolute' as const, top: 0, left: 0, right: 0 }
   return (
     <Box flexGrow={1}>
-      {below !== null && <Box key={`d${below.key}`} flexGrow={1}>{svg(below)}</Box>}
-      <Box key={`d${top!.key}`} flexGrow={1} {...(below !== null ? { position: 'absolute' as const, top: 0, left: 0, right: 0 } : {})}>
-        {svg(top!)}
+      <Box key={`a${anchor}`} flexGrow={1}>
+        <ui.Svg source={ANCHOR} alt="" width={4000} height={H + 2 * PAD} isInteractive />
       </Box>
+      {[below, top].map(l => l !== null && <Box key={`d${l.key}`} flexGrow={1} {...over}>{svg(l)}</Box>)}
     </Box>
   )
 
@@ -1424,6 +1431,9 @@ export function outlineless(svg: string): string {
   return ids.reduce((s, id) => s.replace(new RegExp(`<(?:animate|animateTransform|set)\\b[^>]*href="#${id}"[^>]*/>`, 'g'), ''), out)
 }
 
+// The anchor's drawing: the bar's outline, where the real one lies, at a fraction of its strength.
+const ANCHOR = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible"><svg x="0" y="${PAD}" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible"><rect x="0.5" y="0.5" width="${U - 1}" height="${H - 1}" rx="5" ry="4" fill="none" stroke="#8a8a8a" stroke-opacity="0.08" stroke-width="1" vector-effect="non-scaling-stroke"/></svg></svg>`
+
 // How long a new drawing is given to load before the one beneath it is swapped out.
 const LOAD_MS = 700
 // About how long a new drawing takes to show once made.
@@ -1448,6 +1458,9 @@ const BEHIND_S = 0.08
 type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; after?: number; reshaped?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
+// The key of what holds the band's height while it shows a bar (see drawBand); a new one each
+// time the bar comes back.
+let anchor: number | null = null
 let layers = 0
 
 /**
