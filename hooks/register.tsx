@@ -1113,10 +1113,10 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const at = { position: 'absolute' as const, top: 0, left: 0, right: 0 }
   return (
     <Box flexGrow={1}>
-      {/* An empty drawing, laid out as the drawings are, holds the band's room (a Box's height
-          counts rows), as the drawings over it are all placed absolutely. It never changes, so its
-          frame is never loaded again. */}
-      <ui.Svg key="room" source={ROOM} alt="" width={4000} height={H + 2 * PAD} isInteractive />
+      {/* An invisible image, sized as the drawings are, holds the band's room (a Box's height
+          counts rows), as the drawings over it are all placed absolutely. An image, as a frame is
+          sized by the app to what it draws; its source never changes. */}
+      <ui.Svg key="room" source={ROOM} alt="" width={4000} height={H + 2 * PAD} />
       {[below, top].map(l => l !== null && <Box key={`d${l.key}`} {...at}>{svg(l)}</Box>)}
     </Box>
   )
