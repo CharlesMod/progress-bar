@@ -185,8 +185,8 @@ const GLOW_S = 2.8
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
 // as SMIL spells it), so a move glides to a stop rather than braking at its end.
 // A heavy, viscous move, like thick oil: a slow gathering start, no snap at either end, and a
-// long settle.
-const EASE = { x1: 0.5, y1: 0, x2: 0.15, y2: 1 }
+// settle so long the fill is still creeping when the next estimate comes to speed it up again.
+const EASE = { x1: 0.45, y1: 0, x2: 0.04, y2: 1 }
 const KEY_SPLINE = `${EASE.x1} ${EASE.y1} ${EASE.x2} ${EASE.y2}`
 // The same settle, for a move that starts already moving: it sets off at about the speed the
 // last one had, rather than from rest.
@@ -208,8 +208,10 @@ export function eased(t: number): number {
 }
 
 /** Seconds the fill takes to ease from `from` to `to`: a short move is quick, a long one unhurried. */
-export function fillSeconds(from: number, to: number): number {
-  return to - from < 0.0005 ? 0 : 1.1 + 2.4 * Math.sqrt(to - from)
+export function fillSeconds(from: number, to: number, finishing = false): number {
+  if (to - from < 0.0005) return 0
+  // The last move, to a finished bar, is quicker: the finale waits for it.
+  return finishing ? 1.1 + 2.4 * Math.sqrt(to - from) : 2 + 5 * Math.sqrt(to - from)
 }
 
 /** Where along the ease (0-1 of its time) the fill has covered fraction `k` of its move. */
@@ -457,14 +459,14 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const finished = reflow > 0 && was < slices.at ? Math.max(from, Math.min(to, slices.at / n)) : from
   const a = startAt ?? onBar(from, before)
   const m1 = Math.max(a, onBar(finished, before))
-  const reach = lead + fillSeconds(a, m1)
+  const reach = lead + fillSeconds(a, m1, isDone)
   // A drawing made on the person's return blinks no step: they finished while the person was away.
   const blinksBefore = stepBlinks ? blinkTimes(a, m1, n, isDone, before, lead) : []
   const slideAt = reflow > 0 ? Math.max(reach, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : lead
   const m2 = onBar(finished, edges)
   const c = onBar(to, edges)
   const fillAt = slideAt + reflow
-  const seconds = fillSeconds(m2, c)
+  const seconds = fillSeconds(m2, c, isDone)
   const total = fillAt + seconds
   // The fill keeps to its place through the sections' slide, then eases to the new estimate.
   const W = U - 2 * INSET_U
