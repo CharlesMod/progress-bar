@@ -968,9 +968,13 @@ test('an untagged answer after real work plays the finale, and a fading bar lets
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   await layers($)
   await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
-  // Laid over the last drawing while it loads, then drawn alone, so all of it fades.
+  // Laid over the last drawing while it loads; then the one beneath is drawn as the finale ends
+  // (faded out), so nothing is left once the top one fades. Both stay mounted.
   const first = await layers($)
   expect(first).toHaveLength(2)
   expect(first[1]).toContain('#ffd54a')
-  expect(await layers($)).toEqual([first[1]])
+  const after = await layers($)
+  expect(after[1]).toBe(first[1])
+  expect(after[0]).not.toBe(first[0])
+  expect([...after[0]!.matchAll(/begin="(-?[\d.]+)s"/g)].every(([, b]) => Number(b) <= 0)).toBe(true)
 })

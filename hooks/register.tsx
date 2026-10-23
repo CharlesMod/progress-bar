@@ -164,10 +164,16 @@ const FILL_RY = 2.5
 // The light flowing along a working fill: one band every FLOW_U units, moving one band a FLOW_S.
 const FLOW_U = 160
 const FLOW_S = 1.4
+// The sparks along an empty working bar: SPARKS of them, each pulsing once a PULSE_S, a spark
+// PULSE_LAG_S behind the one nearer its end, so each pulse runs in to the middle.
+const SPARKS = 11
+const PULSE_S = 1.6
+const PULSE_LAG_S = 0.12
+
 // Bubbles rising through a working fill: one tile of a few dots, BUBBLE_U units across and the
 // fill's height tall, repeated along the bar and moved up one tile a BUBBLE_S. One animated
 // attribute for the lot, so it costs the page next to nothing.
-const BUBBLE_U = 90
+const BUBBLE_U = 120
 const BUBBLE_S = 2.6
 
 /** The rising bubbles' tile, as a pattern laid over a fill `inset` pixels from the outline. */
@@ -175,10 +181,11 @@ function bubbles(inset: number, begin: string): string {
   const h = H - 2 * inset
   // Across, in stretched units, a dot is drawn about half again as wide as it is tall, so it
   // reads round on a bar the band squeezes.
-  const dots = [[12, 0.25, 0.9], [41, 0.7, 0.7], [63, 0.1, 1.1], [80, 0.5, 0.6]]
+  // Bubbles: a light ring round a faint, see-through middle.
+  const dots = [[14, 0.3, 2], [47, 0.75, 1.5], [72, 0.15, 2.4], [96, 0.55, 1.3]]
     // A tile clips what crosses its edge, so each dot is drawn again a tile above and below:
     // the part cut off one edge shows at the other, and a dot rises through it whole.
-    .flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y! * h + dy).toFixed(2)}" rx="${(r! * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.35"/>`)).join('')
+    .flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y! * h + dy).toFixed(2)}" rx="${(r! * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.12" stroke="#fff" stroke-opacity="0.55" stroke-width="0.7" vector-effect="non-scaling-stroke"/>`)).join('')
   return `<pattern id="bubbles" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${BUBBLE_U}" height="${h}">${dots}<animateTransform attributeName="patternTransform" type="translate" from="0 0" to="0 ${-h}" dur="${BUBBLE_S}s" begin="${begin}" repeatCount="indefinite"/></pattern>`
 }
 
@@ -407,7 +414,10 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The loops (the flowing light, the bubbles) keep to the wall clock when the drawing says when it
   // was made: each new drawing picks them up where the last one's were, rather than starting them
   // over, which the eye reads as a flicker. A drawing on its own starts them after LEAD_S.
-  const loopAt = (period: number) => made === null ? `${LEAD_S}s` : `${(-(made % period)).toFixed(3)}s`
+  // `lag` holds a loop that many seconds behind the clock, for one that follows another.
+  const loopAt = (period: number, lag = 0) => made === null
+    ? `${(LEAD_S + lag).toFixed(3)}s`
+    : `${(-((((made - lag) % period) + period) % period)).toFixed(3)}s`
   // Whole pixels, so the fill's top and bottom edges are crisp: a half-pixel edge is drawn half
   // see-through, and where the drawing beneath shows through it, the fill looks a pixel thicker.
   const inset = 3
@@ -494,6 +504,18 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     ? `<rect x="-2" width="${U + 4}" y="-1.5" height="${H + 2}" rx="6" ry="5" fill="none" stroke="#ffd54a" stroke-width="3" vector-effect="non-scaling-stroke" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
 `
     : ''
+  // An empty bar of a working ask isn't left blank: a row of sparks pulses, wave after wave running
+  // in from both ends to the middle, until the first estimate gives the fill something to show.
+  const pulse = !isDone && from === 0 && to === 0
+    ? Array.from({ length: SPARKS }, (_, i) => {
+      const k = (i + 0.5) / SPARKS
+      const fromEnd = Math.min(i, SPARKS - 1 - i)
+      const begin = loopAt(PULSE_S, fromEnd * PULSE_LAG_S)
+      // Placed by its own <svg> (a share of the width is no transform's), so it scales about its middle.
+      return `<svg x="${along(k)}" y="${H / 2}" overflow="visible"><use href="#spark" opacity="0.3"><animate attributeName="opacity" values="0.3;1;0.3" keyTimes="0;0.3;1" dur="${PULSE_S}s" begin="${begin}" repeatCount="indefinite"/><animateTransform attributeName="transform" type="scale" values="0.55;1;0.55" keyTimes="0;0.3;1" dur="${PULSE_S}s" begin="${begin}" repeatCount="indefinite"/></use></svg>`
+    }).join('')
+    : ''
+  const sparks = hoist(pulse, 'p')
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
@@ -510,16 +532,19 @@ ${flourish}
 </svg>`)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
 <defs>
+<path id="spark" d="M0 -3.4V3.4M-2.9 -1.7L2.9 1.7M-2.9 1.7L2.9 -1.7" fill="none" stroke="#d97757" stroke-width="1.2" stroke-linecap="round"/>
 <path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
 <filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
 </defs>
 <g transform="translate(0 ${PAD})">
 ${stretched.markup}
+${sparks.markup}
 ${sparkles}
 ${burst}
 </g>
 ${stretched.animations}
+${sparks.animations}
 </svg>`
 }
 
@@ -1130,11 +1155,15 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
-  // A fading drawing fades alone: the one beneath it, kept only while it loads, would stay on show
-  // once it had gone. It is let go the next time the band is drawn, by when the fading one is up.
-  if (bar.isOver && below !== null) {
-    if (top!.drawn === true) below = null
-    else top!.drawn = true
+  // A fading drawing fades alone: the one beneath it, kept while it loads, would stay on show once
+  // it had gone. The next time the band is drawn, by when the fading one is up and covers it, the
+  // one beneath is drawn as the fading one ends, so nothing is left. It stays mounted, as taking it
+  // out would move the one on top into its place and load it again, which blanks the band.
+  if (bar.isOver && below !== null && !below.over) {
+    if (top!.drawn === true) {
+      below.source = played(top!.source, Infinity)
+      below.over = true
+    } else top!.drawn = true
   }
   // The drawing on top says what the bar shows now; the one beneath keeps what it last said.
   top!.alt = `Progress on the current request: ${bar.label}`
@@ -1170,7 +1199,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; alt: string; drawn?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; drawn?: boolean; over?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
