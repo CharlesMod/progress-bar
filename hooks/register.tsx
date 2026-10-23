@@ -39,7 +39,7 @@ const TAG = /\[D?\s*(\d{1,3}(?:\.\d+)?)\s*%\]/g
 
 const INSTRUCTIONS = `# Progress estimate
 
-The person tracks your progress on their latest request with a progress bar. Each time you write text to them while working on it (a status update between tool calls, a note on what you found or will do next), include your honest estimate of how complete the work is, as a tag like [D20.9%], anywhere in that text.
+The person tracks your progress on their latest request with a progress bar, which moves only on tags you write. Begin every message you write to them while working on it (a status update between tool calls, a note on what you found or will do next) with your honest estimate of how complete the work is, as a tag: "[D20%] Found where the setting is read; changing it now." Words like "halfway" don't move the bar; only the tag does.
 
 - While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. A section fills only when its step is checked off, and a message that checks off a step tags the step it starts. With no list, the tag is your estimate for the whole request.
 - The bar only moves forward: a lower estimate than an earlier one leaves it where it is, so don't overshoot early.
@@ -61,17 +61,23 @@ export function rescope(shown: number, hasList: boolean): string {
 
 // After this many tool calls in a row with no estimate, the next result carries a reminder; one
 // the model lets pass is said again after this many more, while the step (or the ask) goes on.
-const REMIND_AFTER = 3
-const REMIND_AGAIN = 8
+const REMIND_AFTER = 2
+const REMIND_AGAIN = 5
 
 // The tools that keep the task list.
 const LIST_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'mcp__ccd_turn__update_plan', 'mcp__ccd_turn__wrap_up'])
 
-/** The reminder for a lapse: with a list, the step in progress's section stays empty until tagged. */
-export function reminder(hasList: boolean): string {
+/**
+ * The reminder for a lapse: `missed` when an update to the person just went out with no tag, else
+ * after several tool calls with none. With a list, the step in progress's section stays empty
+ * until tagged. `shown` is what the bar shows, so the estimate has something to start from.
+ */
+export function reminder(hasList: boolean, missed = false, shown: number | null = null): string {
+  const lapse = missed ? 'Your last update to the person had no progress tag' : 'The progress bar has had no estimate for several tool calls'
+  const at = shown === null ? '' : ` (it shows ${Math.round(shown)}%${hasList ? ' through your task list' : ''})`
   return hasList
-    ? `The progress bar's section for the step you have in progress stays empty until you estimate it: it has had no estimate for several tool calls. Include a tag like [D40%] in your next update to the person, with how far along that step is (not the whole request).`
-    : `The progress bar has had no estimate for several tool calls. Include a tag like [D40%] in your next update to the person, with your estimate for the whole request.`
+    ? `${lapse}${at}, so the section for the step you have in progress stays empty. Begin your next update to the person with a tag for how far along that step is (not the whole request), like "[D40%] The parser handles the new case; testing it now."`
+    : `${lapse}${at}, so the bar is only guessing. Begin your next update to the person with a tag for the whole request, like "[D40%] Found the cause; fixing it now."`
 }
 
 /** The last progress tag in a message's text blocks, clamped to 0-100. */
@@ -651,6 +657,8 @@ let tags: [number, number][] = []
 let responseTags = 0
 // Whether the model has tagged this ask at all: a fill from the history is no word of its.
 let modelTagged = false
+// Whether the model's last words to the person, mid-ask, went out with no tag.
+let missed = false
 // The task tools' list, by task id in the order made, with each task's status. It outlives an
 // ask: the tasks are the session's, and a later ask works on through them.
 const tasks = new Map<string, string>()
@@ -719,6 +727,7 @@ function heard(percent: number) {
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
   waiting = false
+  missed = false
   last = null
   untagged = 0
   reminded = false
@@ -854,7 +863,10 @@ export const register: Register = on => {
         block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
       )
       const percent = lastPercent(texts)
+      // Words to the person mid-ask with no tag: the next tool call's result says so.
+      if (percent === null && texts.some(text => text.trim() !== '') && (await read($, progress)).phase === 'working') missed = true
       if (percent !== null) {
+        missed = false
         untagged = 0
         reminded = false
         tags.push([percent, calls])
@@ -995,12 +1007,19 @@ export const register: Register = on => {
       instructed = true
       return { ...result, context: [...(result.context ?? []), INSTRUCTIONS] }
     }
+    // An update just went out untagged: said at once, as the lapse is fresh.
+    if (missed) {
+      missed = false
+      untagged = 0
+      reminded = true
+      return { ...result, context: [...(result.context ?? []), reminder(statuses.includes('in_progress'), true, (await read($, progress)).percent)] }
+    }
     untagged += 1
     // Once the history fills the bar, a lapse the model lets pass isn't said again.
     if (untagged < (reminded ? (fill !== null ? Infinity : REMIND_AGAIN) : REMIND_AFTER)) return result
     untagged = 0
     reminded = true
-    return { ...result, context: [...(result.context ?? []), reminder(statuses.includes('in_progress'))] }
+    return { ...result, context: [...(result.context ?? []), reminder(statuses.includes('in_progress'), false, (await read($, progress)).percent)] }
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'mcp__ccd_turn__update_plan' }, async ($, e, next) => {

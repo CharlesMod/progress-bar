@@ -389,7 +389,7 @@ test('sections finished in one step blink one after another', () => {
   expect(blinkTimes(0, 1, 4, true).map(b => b.i)).toEqual([0, 1, 2])
 })
 
-test('three tool calls in a row with no estimate get one reminder, and a tag starts the count again', async ($, on) => {
+test('two tool calls in a row with no estimate get one reminder, and a tag starts the count again', async ($, on) => {
   engine(on)
   on('prompt.compose', () => ({ sections: [] }))
   on('tool.call', () => ({ result: {} }))
@@ -398,15 +398,13 @@ test('three tool calls in a row with no estimate get one reminder, and a tag sta
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Started. [D10%]', 'a1')
   expect(await call()).toEqual([])
-  expect(await call()).toEqual([])
-  const third = await call()
-  expect(third.length).toBe(1)
-  expect(third[0]).toContain('[D40%]')
-  // Not on every call: the fourth says nothing.
+  const second = await call()
+  expect(second.length).toBe(1)
+  expect(second[0]).toContain('[D40%]')
+  // Not on every call: the third says nothing.
   expect(await call()).toEqual([])
   // A tag starts the count again.
   await say($, 'More. [D30%]', 'a2')
-  expect(await call()).toEqual([])
   expect(await call()).toEqual([])
   expect((await call()).length).toBe(1)
   // Not between asks.
@@ -714,13 +712,12 @@ test('a step left untagged is reminded again, each new step starts the count afr
   await $.turn.start({ text: 'job', turnId: 't1' })
   const items = ['a', 'b', 'c'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
-  // The first lapse at the third call, then again every eighth while the model lets them pass.
-  expect(await reminders(19)).toEqual([3, 11, 19])
+  // The first lapse at the second call, then again every fifth while the model lets them pass.
+  expect(await reminders(17)).toEqual([2, 7, 12, 17])
   // A new step starts the count afresh, at the first lapse's pace.
   await respond($, 1)
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
-  const third = await reminders(3)
-  expect(third).toEqual([3])
+  expect(await reminders(2)).toEqual([2])
   expect(reminder(true)).toContain('step you have in progress')
   expect(reminder(false)).toContain('whole request')
 })
@@ -772,13 +769,13 @@ test('a step fills from the history as calls go by, is learned when checked off,
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
   expect(await label($, 'desktop')).toBe('0%')
   await call()
-  await call()
+  // The first lapse is still said; the history fills the bar after it, so it is not said again.
+  expect((await call()).length).toBe(1)
   // Two calls into a step that takes four: half the first of two sections, and the creep's bit.
   await near($, 25)
-  // The first lapse is still said; the history fills the bar after it, so it is not said again.
   const said: number[] = []
   for (let i = 3; i <= 20; i++) if ((await call()).length > 0) said.push(i)
-  expect(said).toEqual([3])
+  expect(said).toEqual([])
   await respond($, 1)
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
   expect(await label($, 'desktop')).toBe('50%')
@@ -1033,4 +1030,23 @@ test('a finished bar leaves the band once it has faded, so the band\'s pane goes
   // The next ask brings it back.
   await $.turn.start({ text: 'next', turnId: 't2' })
   expect(await layers($)).toHaveLength(1)
+})
+
+test('an update to the person with no tag is answered by the next tool call, with what the bar shows', async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, 'Started. [D30%]', 'a1')
+  expect(await call()).toEqual([])
+  // Words with no tag: said at once, at the very next call.
+  await say($, 'Halfway now.', 'a2')
+  const next = await call()
+  expect(next).toHaveLength(1)
+  expect(next[0]).toContain('had no progress tag')
+  expect(next[0]).toMatch(/shows 3\d%/)
+  // Said once a lapse: the call after it is quiet.
+  expect(await call()).toEqual([])
 })
