@@ -172,13 +172,12 @@ const FILL_RY = 2.5
 // The light flowing along a working fill: one band every FLOW_U units, moving one band a FLOW_S.
 const FLOW_U = 160
 const FLOW_S = 1.4
-// The rings closing in on an empty working bar: RINGS of them, spread evenly over a RING_S loop,
-// each from the bar's inside edge to RING_IN pixels inside it.
-const RINGS = 3
-const RING_S = 2.4
-const RING_IN = 3
-// About how many of the bar's stretched units a pixel is across, on a band of a usual width.
-const U_PER_PX = 1.4
+// The glow in an empty working bar: GLOW_W of the bar across, breathing between GLOW_LOW and
+// GLOW_HIGH once a GLOW_S.
+const GLOW_W = 0.4
+const GLOW_LOW = 0.3
+const GLOW_HIGH = 0.85
+const GLOW_S = 2.8
 
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
@@ -505,24 +504,17 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     ? `<rect x="-2" width="${U + 4}" y="-1.5" height="${H + 2}" rx="6" ry="5" fill="none" stroke="#ffd54a" stroke-width="3" vector-effect="non-scaling-stroke" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
 `
     : ''
-  // An empty bar of a working ask isn't left blank: rings of the fill's own shape close in from
-  // the bar's inside edge to its middle, one after another, fading as they go, until the first
-  // estimate gives the fill something to show.
+  // An empty bar of a working ask isn't left blank: a soft blue glow breathes in its middle,
+  // inside the bar, until the first estimate gives the fill something to show.
   const rings = !isDone && from === 0 && to === 0
-    ? Array.from({ length: RINGS }, (_, i) => {
-      const begin = loopAt(RING_S, (i * RING_S) / RINGS)
-      const a = { x: INSET_U, y: inset, w: W, h: H - 2 * inset }
-      // In from every edge by the same few pixels (a pixel is about U_PER_PX units across).
-      const b = { x: a.x + RING_IN * U_PER_PX, y: a.y + RING_IN, w: a.w - 2 * RING_IN * U_PER_PX, h: a.h - 2 * RING_IN }
-      const loop = (name: string, from: number, to: number) => `<animate attributeName="${name}" values="${from.toFixed(2)};${to.toFixed(2)}" keyTimes="0;1" calcMode="spline" keySplines="0.3 0 0.4 1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/>`
-      return `<rect data-ring="" x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="${FILL_RX}" ry="${FILL_RY}" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.7;0" keyTimes="0;0.25;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
-    }).join('')
+    ? `<rect data-ring="" x="${(U * (1 - GLOW_W) / 2).toFixed(2)}" y="${inset}" width="${(U * GLOW_W).toFixed(2)}" height="${H - 2 * inset}" fill="url(#glowing)" opacity="${GLOW_LOW}"><animate attributeName="opacity" values="${GLOW_LOW};${GLOW_HIGH};${GLOW_LOW}" keyTimes="0;0.5;1" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" dur="${GLOW_S}s" begin="${loopAt(GLOW_S)}" repeatCount="indefinite"/></rect>`
     : ''
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 ${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${loopAt(FLOW_S)}" repeatCount="indefinite"/></linearGradient>`}
+<radialGradient id="glowing" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#6aa8f0" stop-opacity="0.9"/><stop offset="0.55" stop-color="#4a8ce0" stop-opacity="0.35"/><stop offset="1" stop-color="#4a8ce0" stop-opacity="0"/></radialGradient>
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
