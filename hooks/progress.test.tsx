@@ -969,8 +969,8 @@ test('an untagged answer after real work plays the finale, and a fading bar lets
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   await layers($)
   await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
-  // Laid over the last drawing while it loads; then the one beneath is drawn as the finale ends
-  // (faded out), so nothing is left once the top one fades. Both stay mounted.
+  // Laid over the last drawing while it loads; then the one beneath becomes a copy of the top one,
+  // so nothing of the old one is left once the top one fades. Both stay mounted.
   const first = await layers($)
   expect(first).toHaveLength(2)
   expect(first[1]).toContain('#ffd54a')
@@ -980,7 +980,9 @@ test('an untagged answer after real work plays the finale, and a fading bar lets
   const after = await layers($)
   expect(after[1]).toBe(first[1])
   expect(after[0]).not.toBe(first[0])
-  expect([...after[0]!.matchAll(/begin="(-?[\d.]+)s"/g)].every(([, b]) => Number(b) <= 0)).toBe(true)
+  // A copy of the one on top, a moment behind it: the finale and the fade included.
+  expect(after[0]).toContain('#ffd54a')
+  expect(after[0]!.replace(/begin="-?[\d.]+s"/g, '')).toBe(first[1]!.replace(/begin="-?[\d.]+s"/g, ''))
 })
 
 test('a request interrupted, carried on by the person\'s message, then answered with no tag plays the finale', async ($, on) => {

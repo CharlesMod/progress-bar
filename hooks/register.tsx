@@ -1238,21 +1238,23 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   }
   // The drawing beneath is kept only while the new one loads: left there, whatever of it the new
   // one doesn't cover (a ring, or all of it once the new one fades) stays on show. Once the new one
-  // has had LOAD_MS to load, the one beneath is swapped for a fresh frame drawn as the new one will
-  // end, which the new one covers while it loads. A fresh frame, as the app doesn't reload a mounted
+  // has had LOAD_MS to load, the one beneath is swapped for a fresh frame: a copy of the new one,
+  // running in step a moment behind it, which the new one covers as it goes and while it loads. A fresh frame, as the app doesn't reload a mounted
   // frame for a changed source; the band is held by it, so the new one never moves.
   await read($, tick)
   if (below !== null && !below.retired) {
     if (top!.loaded === true) {
-      below = { ...below, key: ++layers, source: played(top!.source, Infinity), settled: false, retired: true }
-      said(`draw ${below.key}: beneath ${top!.key}, drawn as it ends`)
+      // The copy runs as the new one does, a moment behind it, so its fill never shows ahead.
+      below = { ...below, key: ++layers, source: played(top!.source, top!.after! / 1000 - BEHIND_S), settled: false, retired: true }
+      said(`draw ${below.key}: beneath ${top!.key}, a copy behind it`)
     } else if (!top!.timed) {
       const laid = top!
       laid.timed = true
       // A frame says nothing when it has loaded, so this is a guess at it, LOAD_MS after the new
       // drawing was laid: the band is drawn again then.
       // Rings beneath show wherever the new fill hasn't reached yet, so they go sooner.
-      $.clock.after(below.source.includes('data-ring') ? RING_LOAD_MS : LOAD_MS, () => {
+      laid.after = below.source.includes('data-ring') ? RING_LOAD_MS : LOAD_MS
+      $.clock.after(laid.after, () => {
         laid.loaded = true
         void update($, tick, (n: number) => n + 1).catch(() => {})
       })
@@ -1308,9 +1310,11 @@ function numbered(svg: string, l: Layer): string {
 // How long a new drawing is given to load before the one beneath it is swapped out.
 const LOAD_MS = 700
 const RING_LOAD_MS = 300
+// How far the copy beneath runs behind the drawing on top, as its own frame loads a moment late.
+const BEHIND_S = 0.08
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; after?: number; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
