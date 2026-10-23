@@ -164,6 +164,23 @@ const FILL_RY = 2.5
 // The light flowing along a working fill: one band every FLOW_U units, moving one band a FLOW_S.
 const FLOW_U = 160
 const FLOW_S = 1.4
+// Bubbles rising through a working fill: one tile of a few dots, BUBBLE_U units across and the
+// fill's height tall, repeated along the bar and moved up one tile a BUBBLE_S. One animated
+// attribute for the lot, so it costs the page next to nothing.
+const BUBBLE_U = 90
+const BUBBLE_S = 2.6
+
+/** The rising bubbles' tile, as a pattern laid over a fill `inset` pixels from the outline. */
+function bubbles(inset: number): string {
+  const h = H - 2 * inset
+  // Across, in stretched units, a dot is drawn about half again as wide as it is tall, so it
+  // reads round on a bar the band squeezes.
+  const dots = [[12, 0.25, 0.9], [41, 0.7, 0.7], [63, 0.1, 1.1], [80, 0.5, 0.6]]
+    // A tile clips what crosses its edge, so each dot is drawn again a tile above and below:
+    // the part cut off one edge shows at the other, and a dot rises through it whole.
+    .flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y! * h + dy).toFixed(2)}" rx="${(r! * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.35"/>`)).join('')
+  return `<pattern id="bubbles" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${BUBBLE_U}" height="${h}">${dots}<animateTransform attributeName="patternTransform" type="translate" from="0 0" to="0 ${-h}" dur="${BUBBLE_S}s" begin="${LEAD_S}s" repeatCount="indefinite"/></pattern>`
+}
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
 // as SMIL spells it), so a move glides to a stop rather than braking at its end.
@@ -416,7 +433,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The fill's leading edge is rounded, a meniscus rather than a cut. While the ask works, a soft
   // light flows along it, as a loading bar does; a finished ask's fill is still.
   const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${FILL_RY}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
-  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : fill('fill="url(#flow)"'))
+  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : fill('fill="url(#bubbles)"') + fill('fill="url(#flow)"'))
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
     ? `<animate attributeName="stroke" to="#d9a521" dur="0.25s" begin="${begin.toFixed(3)}s" fill="freeze"/>`
@@ -478,6 +495,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 ${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${LEAD_S}s" repeatCount="indefinite"/></linearGradient>`}
+${isDone ? '' : bubbles(inset)}
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}

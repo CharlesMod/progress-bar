@@ -149,3 +149,9 @@ scenario('quick answer', 'No tool calls, no tags: the bar fills quietly on the a
   await s.ask('what time is it')
   await s.answer('noon')
 })
+
+scenario('untagged work', 'Tool calls creep the bar; the answer comes with no tag at all: it fills quietly, then fades.', null, async s => {
+  await s.ask('untagged')
+  await s.call(6)
+  await s.answer('done, no tag')
+})

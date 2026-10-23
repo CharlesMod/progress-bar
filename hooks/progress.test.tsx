@@ -12,8 +12,10 @@ const BAND = { component: 'AbovePrompt', props: BAND_PROPS } as const
 const SURVEY = { component: 'AbovePrompt', props: { ...BAND_PROPS, hasSurvey: true } } as const
 const SURFACES = ['terminal', 'desktop'] as const
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] }
-/** A drawing without the working fill's flowing light, the one animation meant to loop. */
-const still = (svg: string) => svg.replace(/<linearGradient id="flow"[\s\S]*?<\/linearGradient>/, '').replace(/<animateTransform[^>]*href="#flow"[^>]*\/>/g, '')
+/** A drawing without the working fill's flowing light and bubbles, the animations meant to loop. */
+const still = (svg: string) => svg
+  .replace(/<linearGradient id="flow"[\s\S]*?<\/linearGradient>/, '').replace(/<pattern id="bubbles"[\s\S]*?<\/pattern>/, '')
+  .replace(/<animateTransform[^>]*href="#(flow|bubbles)"[^>]*\/>/g, '')
 
 /** Stands in for the engine beneath the plugin: its turns, the hint line under the prompt and the band above it. */
 function engine(on: On) {
