@@ -1158,3 +1158,47 @@ test('once the model says it is near the end, the next tool result says to lead 
   await say($, '[D90%] Checking.', 'a3')
   expect(await call()).toEqual([])
 })
+
+/**
+ * What the desktop app needs to draw the bar full height: it sizes the band by what the drawing in
+ * the band's flow shows. A band held by anything else (a blank spacer, an invisible or faint
+ * anchor, nothing in flow at all) drew the bar as a sliver, three times over. So the band's top
+ * Box must hold, in flow (not absolutely placed), a real drawing: a frame with something to say,
+ * and no drawing anywhere in the band may be a blank one.
+ */
+async function holdsTheBand($: Engine, when: string) {
+  const ui = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
+  const tree = (await ui.drawn()) as unknown as { type: string; props: Record<string, unknown>; children?: unknown[] }
+  await ui.unmount()
+  type Node = { type: string; props: Record<string, unknown>; children?: unknown[] }
+  const nodes = (n: unknown): Node[] => typeof n === 'object' && n !== null ? [n as Node, ...((n as Node).children ?? []).flatMap(nodes)] : []
+  if (tree.type !== 'Box' || !(tree.children ?? []).length) return
+  const svgs = nodes(tree).filter(n => n.type === 'Svg')
+  if (svgs.length === 0) return
+  expect(svgs.filter(n => n.props.alt === '').map(() => when)).toEqual([])
+  const inFlow = (tree.children ?? []).filter(c => (c as Node).props?.position !== 'absolute')
+  const real = inFlow.filter(c => nodes(c).some(n => n.type === 'Svg' && n.props.isInteractive === true && typeof n.props.alt === 'string' && n.props.alt !== ''))
+  expect(real.length > 0 ? 'held' : `sliver at ${when}`).toBe('held')
+}
+
+test('the band is always held by a real drawing in its flow, so the bar is never a sliver', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await holdsTheBand($, 'an empty bar')
+  await say($, '[D30%] Started.', 'a1')
+  await holdsTheBand($, 'a new drawing over the last')
+  await clock.advance(1000)
+  await holdsTheBand($, 'the one beneath swapped for its copy')
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await holdsTheBand($, 'a tool call\'s bump')
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: ['a', 'b', 'c'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' })) })
+  await holdsTheBand($, 'a list cut into sections')
+  await clock.advance(1000)
+  await say($, '[D100%] Done.', 'a2')
+  await holdsTheBand($, 'the finale')
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
+  await clock.advance(1000)
+  await holdsTheBand($, 'the fade')
+})
