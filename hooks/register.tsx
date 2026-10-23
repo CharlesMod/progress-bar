@@ -1268,7 +1268,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 
 // While chasing what the band shows, each drawing carries its number (the trace's) in its corner,
 // small and dim, so the person can say which one they see.
-const NUMBERED = true
+const NUMBERED = false
 function numbered(svg: string, l: Layer): string {
   if (!NUMBERED) return svg
   const at = svg.lastIndexOf('</svg>')
