@@ -349,9 +349,18 @@ export function endOf(svg: string): number {
 export function played(svg: string, elapsed: number): string {
   if (elapsed <= 0) return svg
   const by = Math.min(elapsed, endOf(svg) + 0.001)
-  return svg.replace(/\bbegin="(-?[\d.]+)s"/g, (_, b: string) => {
-    const at = Number(b) - by
-    return `begin="${(at > 0 ? Math.max(MIN_BEGIN_S, at) : at).toFixed(3)}s"`
+  return svg.replace(/<(animate|animateTransform|animateMotion|set)\b[^>]*>/g, tag => {
+    const begin = tag.match(/\bbegin="(-?[\d.]+)s"/)
+    if (begin === null) return tag
+    const at = Number(begin[1]) - by
+    const dur = Number(tag.match(/\bdur="([\d.]+)s"/)?.[1] ?? 0)
+    // Begun in the past and still going (a loop): its start moves back, and it runs on in step.
+    // Ended by now: it takes its last frame at once, as a page doesn't apply an animation whose
+    // whole run lies before it was shown, frozen or not.
+    const ended = at + dur <= 0 && !/repeatCount="indefinite"/.test(tag)
+    const moved = ended ? 0 : at > 0 ? Math.max(MIN_BEGIN_S, at) : at
+    const out = tag.replace(/\bbegin="-?[\d.]+s"/, `begin="${moved.toFixed(3)}s"`)
+    return ended ? out.replace(/\bdur="[\d.]+s"/, 'dur="0.001s"') : out
   })
 }
 

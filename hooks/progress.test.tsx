@@ -850,7 +850,7 @@ test('a drawing shown again later carries on from where it got to, and is still 
   // Shown again mid-move: the move's begin is already past, so it shows partway, not from its start.
   expect(Math.min(...begins(played(svg, 0.5)))).toBeLessThan(0)
   // Shown again after it has played: every animation is over, and later redraws are the same string.
-  expect(endOf(played(svg, end + 5))).toBeLessThanOrEqual(0)
+  expect(endOf(played(svg, end + 5))).toBeLessThanOrEqual(0.001)
   expect(played(svg, end + 5)).toBe(played(svg, end + 50))
   // One that hasn't begun yet still begins late enough to play in view.
   const later = played(battery(0.6, 1, true), 0.2)
@@ -875,7 +875,7 @@ test('an ordinary redraw draws the very same drawing, and coming back draws it f
   // Back in the session: the same drawing, every animation over, and it stays so.
   await $.session.attach({ surface: 'desktop' } as never)
   const back = (await source($))!
-  expect(endOf(back)).toBeLessThanOrEqual(0)
+  expect(endOf(back)).toBeLessThanOrEqual(0.001)
   expect(await source($)).toBe(back)
 })
 
