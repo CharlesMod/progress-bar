@@ -1110,7 +1110,10 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   // which blanks it.
   const at = { position: 'absolute' as const, top: 0, left: 0, right: 0 }
   return (
-    <Box flexGrow={1} height={H + 2 * PAD}>
+    <Box flexGrow={1}>
+      {/* An empty image holds the band's height in pixels (a Box's height counts rows), as the
+          drawings over it are all placed absolutely. */}
+      <ui.Svg key="room" source={`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="${H + 2 * PAD}"/>`} alt="" width={1} height={H + 2 * PAD} />
       {[below, top].map(l => l !== null && <Box key={`d${l.key}`} {...at}>{svg(l)}</Box>)}
     </Box>
   )
