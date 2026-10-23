@@ -45,7 +45,7 @@ The person tracks your progress on their latest request with a progress bar, whi
 
 - While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. A section fills only when its step is checked off, and a message that checks off a step tags the step it starts. With no list, the tag is your estimate for the whole request.
 - The bar only moves forward: a lower estimate than an earlier one leaves it where it is, so don't overshoot early.
-- The bar reads a tag only once the message carrying it has finished streaming. So as soon as you judge the work done, say [D100%] at the very start of the message that says so, before the rest of your final answer, not at its end. If you know the work is done before a last tool call (a final check, a commit), put [D100%] in the update before that call. Leave the tag out of replies to quick questions that take no work.
+- The moment the work is done (the change made, the check passed), your very next words are [D100%], even if a summary or a last tidy-up is still to come: "[D100%] All three tests pass. Here's what changed…". The bar reads a tag only once its message has finished streaming, so a [D100%] at the end of a long final answer, or after a last tool call, comes late. Leave the tag out of replies to quick questions that take no work.
 - The tag is hidden from the person on screen.`
 
 // When the person adds to an ask while it works (or right after stopping it), the model is asked
@@ -680,6 +680,13 @@ let responseTags = 0
 let modelTagged = false
 // Whether the model's last words to the person, mid-ask, went out with no tag.
 let missed = false
+// Whether this ask has been told when to say 100%.
+let nudged = false
+// The model's last tag this ask, as it said it.
+let saidLast: number | null = null
+// The model's own estimate past which the next result says it.
+const FINISH_AT = 80
+const FINISH_NUDGE = 'Progress is near the end. As soon as the work is done, begin your next message with [D100%], before any summary or last tidy-up.'
 // Whether this response's tag was read from its stored row, or from its stream: whichever comes
 // first is heard, and the other passes.
 let rowTagged = false
@@ -770,6 +777,8 @@ function heard(percent: number) {
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
   waiting = false
+  nudged = false
+  saidLast = null
   missed = false
   last = null
   untagged = 0
@@ -1054,6 +1063,12 @@ export const register: Register = on => {
       instructed = true
       return { ...result, context: [...(result.context ?? []), INSTRUCTIONS] }
     }
+    // Nearly there by the model's own word: once an ask, the next result says when to say 100%.
+    const lastStep = statuses.length === 0 || statuses.indexOf('in_progress') === statuses.length - 1
+    if (!nudged && lastStep && saidLast !== null && saidLast >= FINISH_AT && saidLast < 100) {
+      nudged = true
+      return { ...result, context: [...(result.context ?? []), FINISH_NUDGE] }
+    }
     // An update just went out untagged: said at once, as the lapse is fresh.
     if (missed) {
       missed = false
@@ -1162,6 +1177,7 @@ let lastError = ''
 
 /** The model's tag for the step (or the ask) in progress, as read from `where`. */
 async function heardTag($: EngineInterface, percent: number, where: string) {
+  saidLast = percent
     missed = false
     untagged = 0
     reminded = false

@@ -1140,3 +1140,20 @@ test('a list that shows up with steps already done blinks none of them', async (
   expect(await label($, 'desktop')).toBe('60%')
   expect((await layers($)).at(-1)).not.toContain('values="0;1;0;1;0"')
 })
+
+test('once the model says it is near the end, the next tool result says to lead with 100% when done, once', async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, '[D50%] Halfway.', 'a1')
+  expect(await call()).toEqual([])
+  await say($, '[D85%] Nearly done.', 'a2')
+  const next = await call()
+  expect(next).toHaveLength(1)
+  expect(next[0]).toContain('[D100%]')
+  await say($, '[D90%] Checking.', 'a3')
+  expect(await call()).toEqual([])
+})
