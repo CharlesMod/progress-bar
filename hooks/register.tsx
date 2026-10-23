@@ -1092,7 +1092,8 @@ async function trace($: EngineInterface, line?: string) {
   if (line !== undefined) traced.push(`${new Date().toISOString().slice(11, 23)} ${line}`)
   traced = traced.slice(-TRACE_KEEP)
   try {
-    await $.store.set(TRACE_KEY, traced)
+    // One trace a session: the store is every session's.
+    await $.store.set(`${TRACE_KEY}.${await $.session.id()}`, traced)
   } catch {
     // The trace is a help, never a reason for a hook to fail.
   }
