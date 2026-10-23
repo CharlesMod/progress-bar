@@ -25,10 +25,20 @@ The person tracks your progress on their latest request with a progress bar. Eac
 - When you finish, end your final message with [D100%]. Leave the tag out of replies to quick questions that take no work.
 - The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
 
-// After this many tool calls in a row with no estimate, the next result carries a reminder.
+// After this many tool calls in a row with no estimate, the next result carries a reminder; one
+// the model lets pass is said again after this many more, while the step (or the ask) goes on.
 const REMIND_AFTER = 3
+const REMIND_AGAIN = 8
 
-const REMINDER = `The progress bar has had no estimate for the last ${REMIND_AFTER} tool calls. Include a tag like [D40%] in your next update to the person, with your estimate for the step you have in progress (or for the whole request, with no task list).`
+// The tools that keep the task list.
+const LIST_TOOLS = new Set(['TodoWrite', 'mcp__ccd_turn__update_plan', 'mcp__ccd_turn__wrap_up'])
+
+/** The reminder for a lapse: with a list, the step in progress's section stays empty until tagged. */
+export function reminder(hasList: boolean): string {
+  return hasList
+    ? `The progress bar's section for the step you have in progress stays empty until you estimate it: it has had no estimate for several tool calls. Include a tag like [D40%] in your next update to the person, with how far along that step is (not the whole request).`
+    : `The progress bar has had no estimate for several tool calls. Include a tag like [D40%] in your next update to the person, with your estimate for the whole request.`
+}
 
 /** The last progress tag in a message's text blocks, clamped to 0-100. */
 export function lastPercent(texts: readonly string[]): number | null {
@@ -559,8 +569,9 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // An ask's first tool call carries the instructions where the system prompt doesn't. Tool calls
-  // that go by with no estimate get one reminder, attached to the third one's result
-  // for the model alone; it says nothing again until the model has tagged.
+  // that go by with no estimate get a reminder, attached to the third one's result for the model
+  // alone, and again every eighth after while it lets them pass; a tag or a new step starts the
+  // count again.
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId !== undefined || 'deny' in result && result.deny !== undefined) return result
@@ -569,10 +580,13 @@ export const register: Register = on => {
       instructed = true
       return { ...result, context: [...(result.context ?? []), INSTRUCTIONS] }
     }
+    // A call that moves the list starts or ends a step: it is no lapse of the one in progress.
+    if (LIST_TOOLS.has(e.tool)) return result
     untagged += 1
-    if (untagged < REMIND_AFTER || reminded) return result
+    if (untagged < (reminded ? REMIND_AGAIN : REMIND_AFTER)) return result
+    untagged = 0
     reminded = true
-    return { ...result, context: [...(result.context ?? []), REMINDER] }
+    return { ...result, context: [...(result.context ?? []), reminder(statuses.includes('in_progress'))] }
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'mcp__ccd_turn__update_plan' }, async ($, e, next) => {
@@ -671,6 +685,11 @@ async function listed($: EngineInterface, next: string[]) {
   if (next.indexOf('in_progress') !== statuses.indexOf('in_progress') || after.done !== before.done || after.total !== before.total) {
     estimate = fresh !== null && fresh < 100 ? fresh : null
     workers.clear()
+    // A step that starts untagged gets its own reminders, at the first lapse's pace.
+    if (estimate === null) {
+      untagged = 0
+      reminded = false
+    }
   }
   statuses = next
   await redraw($, false)

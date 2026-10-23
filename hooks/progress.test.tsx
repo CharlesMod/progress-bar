@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -371,7 +371,7 @@ test('three tool calls in a row with no estimate get one reminder, and a tag sta
   const third = await call()
   expect(third.length).toBe(1)
   expect(third[0]).toContain('[D40%]')
-  // Once per lapse: the fourth says nothing.
+  // Not on every call: the fourth says nothing.
   expect(await call()).toEqual([])
   // A tag starts the count again.
   await say($, 'More. [D30%]', 'a2')
@@ -663,4 +663,29 @@ test('where the system prompt carries the instructions, the first tool call carr
   expect(composed.sections.some(s => s.id === 'progress-bar:instructions')).toBe(true)
   await $.turn.start({ text: 'job', turnId: 't1' })
   expect(((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []).toEqual([])
+})
+
+test('a step left untagged is reminded again, each new step starts the count afresh, and the reminder names the step', async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  const reminders = async (n: number) => {
+    const said: number[] = []
+    for (let i = 1; i <= n; i++) if ((await call()).length > 0) said.push(i)
+    return said
+  }
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  const items = ['a', 'b', 'c'].map((content, i) => ({ content, status: i === 0 ? 'in_progress' : 'pending' }))
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items })
+  // The first lapse at the third call, then again every eighth while the model lets them pass.
+  expect(await reminders(19)).toEqual([3, 11, 19])
+  // A new step starts the count afresh, at the first lapse's pace.
+  await respond($, 1)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true })
+  const third = await reminders(3)
+  expect(third).toEqual([3])
+  expect(reminder(true)).toContain('step you have in progress')
+  expect(reminder(false)).toContain('whole request')
 })
