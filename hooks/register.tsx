@@ -1107,24 +1107,19 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     />
   )
   // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
-  // shows through until it has. Each is keyed by its drawing and drawn with the same props for as
-  // long as it's mounted, from on top to beneath: a frame whose box changes may be mounted again,
-  // which blanks it.
-  const at = { position: 'absolute' as const, top: 0, left: 0, right: 0 }
+  // shows through until it has. Each is keyed by its drawing, so the one beneath is never mounted
+  // again: it was on top a moment ago, and only its place in the band changes.
   return (
     <Box flexGrow={1}>
-      {/* An empty drawing, boxed and sized exactly as the drawings are, holds the band's room, as
-          the drawings over it are all placed absolutely and the band clips them to it. Its source
-          never changes, so its frame is never loaded again. */}
-      <Box key="room" flexGrow={1}><ui.Svg source={ROOM} alt="" width={4000} height={H + 2 * PAD} isInteractive /></Box>
-      {[below, top].map(l => l !== null && <Box key={`d${l.key}`} flexGrow={1} {...at}>{svg(l)}</Box>)}
+      {below !== null && <Box key={`d${below.key}`} flexGrow={1}>{svg(below)}</Box>}
+      <Box key={`d${top!.key}`} flexGrow={1} {...(below !== null ? { position: 'absolute' as const, top: 0, left: 0, right: 0 } : {})}>
+        {svg(top!)}
+      </Box>
     </Box>
   )
+
 }
 
-// Not empty: an element with nothing in it may be scrubbed or sized to nothing, and the band's room
-// shrinks with it.
-const ROOM = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}"><rect width="100%" height="${H + 2 * PAD}" fill="none"/></svg>`
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
 type Layer = { key: number; source: string; alt: string; to: number; n: number; at: number; of: number; settled?: boolean }
