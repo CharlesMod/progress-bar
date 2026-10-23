@@ -756,8 +756,8 @@ let creep: number | null = null
 // Each tool call done creeps the bar this share of the way to a ceiling CREEP_ROOM of the way from
 // the real word to CREEP_CAP: always a little forward, less each time, never the ceiling, and at
 // most that much ahead of what anything has said.
-const CREEP_RATE = 0.2
-const CREEP_ROOM = 0.25
+const CREEP_RATE = 0.35
+const CREEP_ROOM = 0.3
 const CREEP_CAP = 90
 
 /** Where the creep stands after one more tool call, from where it was and the real word under it. */
@@ -818,7 +818,7 @@ export function applyPlan(before: readonly string[], e: { items?: unknown; advan
 
 // A new drawing remounts the band's frame, which blanks it for a moment: a move smaller than this
 // share of the bar keeps the drawing it has, so small estimates don't blink the bar.
-const MIN_MOVE = 0.03
+const MIN_MOVE = 0.015
 
 /**
  * The drawing of the bar for `percent`: the same string for as long as nothing visible has changed,

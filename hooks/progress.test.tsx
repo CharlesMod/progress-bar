@@ -183,10 +183,10 @@ function nested(svg: string): string {
   return out.replace(/ id="m\d+"/g, '')
 }
 
-/** The bar's label as a number, for a check that allows the creep's few points over the real word. */
+/** The bar's label as a number, for a check that allows the creep's points over the real word. */
 async function near($: Engine, real: number) {
   const shown = Number((await label($, 'desktop'))!.replace('%', ''))
-  expect(shown >= real && shown <= real + 5).toBe(true)
+  expect(shown >= real && shown <= real + 10).toBe(true)
 }
 
 async function source($: Engine) {
@@ -208,19 +208,20 @@ test('a task list shows the bar empty before any estimate, each tool call creeps
   engine(on)
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
-  // A call done with nothing said: a fifth of the way to a quarter of the way to 90%.
+  // A call done with nothing said: the creep's first step from nothing.
+  const at = async () => Number((await label($, 'desktop'))!.replace('%', ''))
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('4.5%')
+  expect(Math.abs((await at()) - crept(null, null))).toBeLessThan(0.1)
   // A plan is up: the bar is cut into its sections, the step empty before anything is said of it.
   await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'a', status: 'in_progress' }] })
   expect(await label($, 'desktop')).toBe('0%')
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('4.5%')
-  // A tag is the real word; the next call creeps on from it, a fifth of the way to 37.5%.
+  expect(Math.abs((await at()) - crept(null, null))).toBeLessThan(0.1)
+  // A tag is the real word; the next call creeps on from it.
   await say($, 'Started. [D20%]', 'a1')
   expect(await label($, 'desktop')).toBe('20%')
   await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(await label($, 'desktop')).toBe('23.5%')
+  expect(Math.abs((await at()) - crept(20, 20))).toBeLessThan(0.1)
   await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' })
   expect(await label($, 'desktop')).toBe('100%')
 })
@@ -920,7 +921,7 @@ test('the creep moves every call, less each time, never past its ceiling, and a 
   const seen: number[] = []
   for (let i = 0; i < 40; i++) seen.push(c = crept(c, 20))
   for (let i = 1; i < seen.length; i++) expect(seen[i]! > seen[i - 1]! && seen[i]! - seen[i - 1]! < seen[1]! - seen[0]! + 1e-9).toBe(true)
-  expect(seen.at(-1)!).toBeLessThan(37.5)
+  expect(seen.at(-1)!).toBeLessThan(48)
   expect(seen[4]!).toBeGreaterThan(30)
   // A real word above the creep: it creeps on from there.
   expect(crept(30, 60)).toBeGreaterThan(60)
@@ -1053,7 +1054,7 @@ test('an update to the person with no tag is answered by the next tool call, wit
   const next = await call()
   expect(next).toHaveLength(1)
   expect(next[0]).toContain('had no progress tag')
-  expect(next[0]).toMatch(/shows 3\d%/)
+  expect(next[0]).toMatch(/shows [34]\d%/)
   // Said once a lapse: the call after it is quiet.
   expect(await call()).toEqual([])
 })
