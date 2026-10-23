@@ -1017,3 +1017,18 @@ test('the task tools cut the bar into sections, one a task, and fill one as it i
   await $.tool.call({ tool: 'TaskUpdate', taskId: '3', status: 'deleted' })
   expect(await label($, 'desktop')).toBe('50%')
 })
+
+test('a finished bar leaves the band once it has faded, so the band\'s pane goes too', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
+  expect(await layers($)).not.toHaveLength(0)
+  await clock.advance(10_000)
+  expect(await layers($)).toHaveLength(0)
+  // The next ask brings it back.
+  await $.turn.start({ text: 'next', turnId: 't2' })
+  expect(await layers($)).toHaveLength(1)
+})

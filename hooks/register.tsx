@@ -1216,6 +1216,26 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const was = top?.key
   layer(source, last!, of)
   if (top!.key !== was) said(`draw ${top!.key}: ${bar.label}, done ${bar.isDone}, over ${bar.isOver}, beneath ${below?.key ?? 'none'}, working ${e.props.isWorking}`)
+  // A finished bar, once faded, leaves the band, so the app takes its pane away too: at once when
+  // it's drawn already over (coming back to it), else when its fade has ended.
+  await read($, tick)
+  if (bar.isOver) {
+    if (top!.settled === true) top!.gone = true
+    if (top!.gone === true) {
+      said(`band: ${top!.key} faded, the band left to the engine`)
+      return next(e)
+    }
+    if (!top!.fading) {
+      const laid = top!
+      laid.fading = true
+      // The fade is the drawing's own clock, which says nothing as it ends: the band is drawn
+      // again once it has.
+      $.clock.after(Math.ceil(endOf(laid.source) * 1000) + 100, () => {
+        laid.gone = true
+        void update($, tick, (n: number) => n + 1).catch(() => {})
+      })
+    }
+  }
   // The drawing beneath is kept only while the new one loads: left there, whatever of it the new
   // one doesn't cover (a ring, or all of it once the new one fades) stays on show. Once the new one
   // has had LOAD_MS to load, the one beneath is swapped for a fresh frame drawn as the new one will
@@ -1288,7 +1308,7 @@ function numbered(svg: string, l: Layer): string {
 const LOAD_MS = 700
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
