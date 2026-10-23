@@ -1307,8 +1307,8 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
       laid.timed = true
       // A frame says nothing when it has loaded, so this is a guess at it, LOAD_MS after the new
       // drawing was laid: the band is drawn again then.
-      // Rings beneath show wherever the new fill hasn't reached yet, so they go sooner.
-      laid.after = below.source.includes('data-ring') ? RING_LOAD_MS : LOAD_MS
+      // Rings beneath, or sections cut otherwise than the new one's, show through: they go sooner.
+      laid.after = below.source.includes('data-ring') || laid.reshaped === true ? RING_LOAD_MS : LOAD_MS
       $.clock.after(laid.after, () => {
         laid.loaded = true
         void update($, tick, (n: number) => n + 1).catch(() => {})
@@ -1399,7 +1399,7 @@ const RING_LOAD_MS = 300
 const BEHIND_S = 0.08
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; after?: number; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; after?: number; reshaped?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
@@ -1412,10 +1412,12 @@ let layers = 0
  */
 function layer(source: string, state: State, of: number) {
   if (top !== null && top.source === source) return
-  const carriesOn = top !== null && state.n === top.n && state.at === top.at && state.was === state.at && of === top.of
-    && state.from === top.to && state.to >= top.to
-  below = carriesOn ? top : null
-  top = { key: ++layers, source, alt: '', to: state.to, n: state.n, at: state.at, of }
+  // The last drawing stays beneath, so the band is never blank while the new one loads, unless
+  // the bar moves back: its fill would show ahead of the new one's.
+  const keep = top !== null && state.to >= top.to
+  const reshaped = top !== null && (state.n !== top.n || state.at !== top.at || of !== top.of)
+  below = keep ? top : null
+  top = { key: ++layers, source, alt: '', to: state.to, n: state.n, at: state.at, of, reshaped }
 }
 
 /** What the bar shows now, or null while there's no estimate to show. */
