@@ -1128,3 +1128,13 @@ test('a tagged message that comes by again under another id, its tag taken out, 
   await say($, ' Started.', 'a1-again')
   expect(await call()).toEqual([])
 })
+
+test('a list that shows up with steps already done blinks none of them', async ($, on) => {
+  engine(on)
+  on('tool.call', { tool: 'TaskList' }, () => ({ result: { tasks: ['completed', 'completed', 'completed', 'in_progress', 'pending'].map((status, i) => ({ id: String(i + 1), subject: 's', status, blockedBy: [] })) } }))
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await $.tool.call({ tool: 'TaskList' })
+  expect(await label($, 'desktop')).toBe('60%')
+  expect((await layers($)).at(-1)).not.toContain('values="0;1;0;1;0"')
+})

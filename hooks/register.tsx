@@ -834,7 +834,10 @@ export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, 
     // The sections slide only between two layouts of the same list.
     const was = isReturn ? at : last !== null && last.n === n ? last.at : at
     // How a drawing was made stays its own: a later redraw of it draws it the same.
-    last = { from, to, isDone, n, at, was, stepBlinks: !isReturn, made: nowS(), startAt }
+    // Steps blink only as they are checked off in view: not on a return, and not when the list is
+    // new or cut afresh (its steps were done before the person saw them).
+    const blinks = !isReturn && last !== null && last.n === n
+    last = { from, to, isDone, n, at, was, stepBlinks: blinks, made: nowS(), startAt }
   }
   return battery(last.from, last.to, last.isDone, n, slices, last.was, last.stepBlinks, last.made, last.startAt)
 }
