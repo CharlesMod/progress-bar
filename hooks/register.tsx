@@ -509,7 +509,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
       // In from every edge by the same few pixels (a pixel is about U_PER_PX units across).
       const b = { x: a.x + RING_IN * U_PER_PX, y: a.y + RING_IN, w: a.w - 2 * RING_IN * U_PER_PX, h: a.h - 2 * RING_IN }
       const loop = (name: string, from: number, to: number) => `<animate attributeName="${name}" values="${from.toFixed(2)};${to.toFixed(2)}" keyTimes="0;1" calcMode="spline" keySplines="0.3 0 0.4 1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/>`
-      return `<rect x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="${FILL_RX}" ry="${FILL_RY}" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.7;0" keyTimes="0;0.25;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
+      return `<rect data-ring="" x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="${FILL_RX}" ry="${FILL_RY}" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.7;0" keyTimes="0;0.25;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
     }).join('')
     : ''
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
@@ -1251,7 +1251,8 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
       laid.timed = true
       // A frame says nothing when it has loaded, so this is a guess at it, LOAD_MS after the new
       // drawing was laid: the band is drawn again then.
-      $.clock.after(LOAD_MS, () => {
+      // Rings beneath show wherever the new fill hasn't reached yet, so they go sooner.
+      $.clock.after(below.source.includes('data-ring') ? RING_LOAD_MS : LOAD_MS, () => {
         laid.loaded = true
         void update($, tick, (n: number) => n + 1).catch(() => {})
       })
@@ -1306,6 +1307,7 @@ function numbered(svg: string, l: Layer): string {
 
 // How long a new drawing is given to load before the one beneath it is swapped out.
 const LOAD_MS = 700
+const RING_LOAD_MS = 300
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
 type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; fading?: boolean; gone?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }

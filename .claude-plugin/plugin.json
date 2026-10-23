@@ -1,6 +1,6 @@
 {
   "name": "progress-bar",
-  "version": "0.18.5",
+  "version": "0.18.6",
   "description": "A slim footer bar showing the model's own estimate of how far along your latest request is",
   "author": { "name": "CharlesMod" },
   "repository": "https://github.com/CharlesMod/progress-bar",
