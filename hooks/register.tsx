@@ -182,12 +182,14 @@ const GLOW_S = 2.8
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
 // as SMIL spells it), so a move glides to a stop rather than braking at its end.
-const EASE = { x1: 0.35, y1: 0, x2: 0.1, y2: 1 }
+// A heavy, viscous move, like thick oil: a slow gathering start, no snap at either end, and a
+// long settle.
+const EASE = { x1: 0.5, y1: 0, x2: 0.15, y2: 1 }
 const KEY_SPLINE = `${EASE.x1} ${EASE.y1} ${EASE.x2} ${EASE.y2}`
 
 /** Seconds the fill takes to ease from `from` to `to`: a short move is quick, a long one unhurried. */
 export function fillSeconds(from: number, to: number): number {
-  return to - from < 0.0005 ? 0 : 0.6 + 1.5 * (to - from)
+  return to - from < 0.0005 ? 0 : 1.1 + 2.4 * Math.sqrt(to - from)
 }
 
 /** Where along the ease (0-1 of its time) the fill has covered fraction `k` of its move. */

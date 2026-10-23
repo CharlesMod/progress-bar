@@ -311,7 +311,7 @@ test('the fill eases from the last estimate to the new one, and the finale plays
   await say($, 'Started. [D20%]', 'a1')
   let svg = (await source($))!
   expect(moveOf(svg)).toEqual([0, 0.2])
-  expect(svg).toMatch(/keySplines="0.35 0 0.1 1(;0.35 0 0.1 1)*"/)
+  expect(svg).toMatch(/keySplines="0.5 0 0.15 1(;0.5 0 0.15 1)*"/)
   expect(svg).toContain('fill="freeze"')
   // Nothing has changed: the band is handed the same drawing, so it keeps the one it has.
   expect(await source($)).toBe(svg)
