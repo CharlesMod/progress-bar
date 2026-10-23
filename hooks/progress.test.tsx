@@ -962,6 +962,7 @@ test('a message right after stopping an ask carries it on, to be re-estimated, r
 
 test('an untagged answer after real work plays the finale, and a fading bar lets go of the drawing beneath', async ($, on) => {
   engine(on)
+  const clock = mock.clock(on)
   on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'job', turnId: 't1' })
   await $.tool.call({ tool: 'Bash', command: 'ls' })
@@ -973,6 +974,9 @@ test('an untagged answer after real work plays the finale, and a fading bar lets
   const first = await layers($)
   expect(first).toHaveLength(2)
   expect(first[1]).toContain('#ffd54a')
+  // Until the top one has had time to load, the one beneath stays as it was.
+  expect(await layers($)).toEqual(first)
+  await clock.advance(1000)
   const after = await layers($)
   expect(after[1]).toBe(first[1])
   expect(after[0]).not.toBe(first[0])
@@ -994,4 +998,22 @@ test('a request interrupted, carried on by the person\'s message, then answered 
   await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't2' })
   const drawn = await layers($)
   expect(drawn.at(-1)).toContain('#ffd54a')
+})
+
+test('the task tools cut the bar into sections, one a task, and fill one as it is completed', async ($, on) => {
+  engine(on)
+  let made = 0
+  on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: String(++made), subject: 'a step' } } }))
+  on('tool.call', { tool: 'TaskUpdate' }, ($, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'three things', turnId: 't1' })
+  for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'TaskCreate', subject: `step ${i}`, description: 'do it' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'in_progress' })
+  expect(await label($, 'desktop')).toBe('0%')
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'in_progress' })
+  expect(await label($, 'desktop')).toMatch(/^33\.3/)
+  // A deleted task leaves the list.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '3', status: 'deleted' })
+  expect(await label($, 'desktop')).toBe('50%')
 })

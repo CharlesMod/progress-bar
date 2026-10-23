@@ -19,6 +19,8 @@ const steps = atom({ plugin: 'progress-bar', key: 'steps' } as const, { total: 0
 // a drawing of a state already seen is drawn finished rather than played again.
 const shownState = atom({ plugin: 'progress-bar', key: 'shown' } as const, null as string | null)
 const inView = atom({ plugin: 'progress-bar', key: 'inView' } as const, true)
+// Bumped to draw the band again once a new drawing has had time to load (see drawBand).
+const tick = atom({ plugin: 'progress-bar', key: 'tick' } as const, 0)
 
 /** The bar's state as one string: two equal ones draw the same bar. */
 function stateKey(p: Progress, st: Steps): string {
@@ -63,7 +65,7 @@ const REMIND_AFTER = 3
 const REMIND_AGAIN = 8
 
 // The tools that keep the task list.
-const LIST_TOOLS = new Set(['TodoWrite', 'mcp__ccd_turn__update_plan', 'mcp__ccd_turn__wrap_up'])
+const LIST_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'mcp__ccd_turn__update_plan', 'mcp__ccd_turn__wrap_up'])
 
 /** The reminder for a lapse: with a list, the step in progress's section stays empty until tagged. */
 export function reminder(hasList: boolean): string {
@@ -165,36 +167,11 @@ const FILL_RY = 2.5
 const FLOW_U = 160
 const FLOW_S = 1.4
 // The rings closing in on an empty working bar: RINGS of them, spread evenly over a RING_S loop,
-// each starting RING_OUT pixels outside the outline.
+// each from the bar's inside edge to RING_END of its length, a line through its middle.
 const RINGS = 3
 const RING_S = 2.4
-const RING_OUT = 5
-// About how many of the bar's stretched units a pixel is across, on a band of a usual width, so
-// a ring grows as far out at its ends as above and below.
-const U_PER_PX = 1.4
+const RING_END = 0.3
 
-// Bubbles rising through a working fill, in a few layers, each a tile of bubbles repeated along
-// the bar and moved up one tile a loop: tiles of unlike widths, so the layers' bubbles fall
-// irregularly against each other, and loops of unlike lengths and easings, so they rise at their
-// own speeds, some gathering pace, some slowing. One animated attribute a layer.
-const BUBBLES: { u: number; s: number; ease: string; dots: [number, number, number][] }[] = [
-  { u: 137, s: 2.3, ease: '0.5 0 0.9 0.6', dots: [[18, 0.3, 2], [91, 0.8, 1.4]] },
-  { u: 211, s: 3.7, ease: '0.2 0.5 0.6 1', dots: [[57, 0.15, 2.4], [160, 0.6, 1.2]] },
-  { u: 173, s: 5.1, ease: '0.4 0 0.6 1', dots: [[33, 0.5, 1.6], [122, 0.1, 1.9], [149, 0.85, 1.1]] },
-]
-
-/** The rising bubbles' layers, as patterns laid over a fill `inset` pixels from the outline. */
-function bubbles(inset: number, loopAt: (period: number) => string): string {
-  const h = H - 2 * inset
-  return BUBBLES.map(({ u, s, ease, dots }, i) => {
-    // A bubble: a light ring round a faint, see-through middle. Across, in stretched units, it is
-    // drawn about half again as wide as it is tall, so it reads round on a bar the band squeezes.
-    // A tile clips what crosses its edge, so each is drawn again a tile above and below: the part
-    // cut off one edge shows at the other, and a bubble rises through it whole.
-    const rings = dots.flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y * h + dy).toFixed(2)}" rx="${(r * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.12" stroke="#fff" stroke-opacity="0.55" stroke-width="0.7" vector-effect="non-scaling-stroke"/>`)).join('')
-    return `<pattern id="bubbles${i}" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${u}" height="${h}">${rings}<animateTransform attributeName="patternTransform" type="translate" values="0 0;0 ${-h}" keyTimes="0;1" calcMode="spline" keySplines="${ease}" dur="${s}s" begin="${loopAt(s)}" repeatCount="indefinite"/></pattern>`
-  }).join('')
-}
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
 // as SMIL spells it), so a move glides to a stop rather than braking at its end.
@@ -418,7 +395,7 @@ function path(attribute: string, points: readonly [number, number][]): string {
  * with a <style> element.
  */
 export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true, made: number | null = null): string {
-  // The loops (the flowing light, the bubbles) keep to the wall clock when the drawing says when it
+  // The loops (the flowing light, the rings) keep to the wall clock when the drawing says when it
   // was made: each new drawing picks them up where the last one's were, rather than starting them
   // over, which the eye reads as a flicker. A drawing on its own starts them after LEAD_S.
   // `lag` holds a loop that many seconds behind the clock, for one that follows another.
@@ -454,7 +431,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The fill's leading edge is rounded, a meniscus rather than a cut. While the ask works, a soft
   // light flows along it, as a loading bar does; a finished ask's fill is still.
   const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${FILL_RY}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
-  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : BUBBLES.map((_, i) => fill(`fill="url(#bubbles${i})"`)).join('') + fill('fill="url(#flow)"'))
+  const body = fill('data-fill="" fill="url(#ramp)"') + (isDone ? '' : fill('fill="url(#flow)"'))
   // The outline turns gold as the fill arrives at the end of a finished ask.
   const outlineAt = (begin: number) => isDone
     ? `<animate attributeName="stroke" to="#d9a521" dur="0.25s" begin="${begin.toFixed(3)}s" fill="freeze"/>`
@@ -511,17 +488,16 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     ? `<rect x="-2" width="${U + 4}" y="-1.5" height="${H + 2}" rx="6" ry="5" fill="none" stroke="#ffd54a" stroke-width="3" vector-effect="non-scaling-stroke" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
 `
     : ''
-  // An empty bar of a working ask isn't left blank: rings of the outline's own shape close in on
-  // it from just outside, one after another, fading as they arrive, until the first estimate
-  // gives the fill something to show.
+  // An empty bar of a working ask isn't left blank: rings of the fill's own shape close in from
+  // the bar's inside edge to its middle, one after another, fading as they go, until the first
+  // estimate gives the fill something to show.
   const rings = !isDone && from === 0 && to === 0
     ? Array.from({ length: RINGS }, (_, i) => {
       const begin = loopAt(RING_S, (i * RING_S) / RINGS)
-      const at = (out: number) => ({ x: 0.5 - out * U_PER_PX, y: 0.5 - out, w: U - 1 + 2 * out * U_PER_PX, h: H - 1 + 2 * out })
-      const a = at(RING_OUT)
-      const b = at(0)
+      const a = { x: INSET_U, y: inset, w: W, h: H - 2 * inset }
+      const b = { x: U / 2 - (RING_END * W) / 2, y: H / 2 - 0.5, w: RING_END * W, h: 1 }
       const loop = (name: string, from: number, to: number) => `<animate attributeName="${name}" values="${from.toFixed(2)};${to.toFixed(2)}" keyTimes="0;1" calcMode="spline" keySplines="0.3 0 0.4 1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/>`
-      return `<rect x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="7" ry="6" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.55;0" keyTimes="0;0.45;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
+      return `<rect x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="${FILL_RX}" ry="${FILL_RY}" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.7;0" keyTimes="0;0.25;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
     }).join('')
     : ''
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
@@ -529,7 +505,6 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 ${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${loopAt(FLOW_S)}" repeatCount="indefinite"/></linearGradient>`}
-${isDone ? '' : bubbles(inset, loopAt)}
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
@@ -664,6 +639,9 @@ let tags: [number, number][] = []
 let responseTags = 0
 // Whether the model has tagged this ask at all: a fill from the history is no word of its.
 let modelTagged = false
+// The task tools' list, by task id in the order made, with each task's status. It outlives an
+// ask: the tasks are the session's, and a later ask works on through them.
+const tasks = new Map<string, string>()
 // Whether the ask left work running that will wake it (a background command or agent, a monitor,
 // a scheduled wake-up), since its last wake.
 let waiting = false
@@ -733,7 +711,10 @@ function startAsk() {
   untagged = 0
   reminded = false
   instructed = false
-  statuses = []
+  // A new ask works on through the task tools' list while any of it is left, and starts afresh
+  // once all of it is done.
+  if ([...tasks.values()].every(status => status === 'completed')) tasks.clear()
+  statuses = [...tasks.values()]
   workers.clear()
   estimate = null
   real = null
@@ -1016,6 +997,39 @@ export const register: Register = on => {
     return result
   }).catch(($, e, next) => next(e))
 
+  // The task tools keep the list one task at a time: a task made is pending, an update moves its
+  // status (a deleted one leaves the list), and a listing says the whole of it afresh.
+  on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
+    const result = await next(e)
+    const id = (result.result as { task?: { id?: unknown } } | undefined)?.task?.id
+    if (e.agentId === undefined && typeof id === 'string') {
+      tasks.set(id, 'pending')
+      await listed($, [...tasks.values()])
+    }
+    return result
+  }).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const result = await next(e)
+    const ok = (result.result as { success?: unknown } | undefined)?.success === true
+    if (e.agentId === undefined && ok && typeof e.taskId === 'string' && typeof e.status === 'string') {
+      if (e.status === 'deleted') tasks.delete(e.taskId)
+      else tasks.set(e.taskId, e.status)
+      await listed($, [...tasks.values()])
+    }
+    return result
+  }).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'TaskList' }, async ($, e, next) => {
+    const result = await next(e)
+    const listing = (result.result as { tasks?: unknown } | undefined)?.tasks
+    if (e.agentId === undefined && Array.isArray(listing)) {
+      tasks.clear()
+      for (const t of listing as { id?: unknown; status?: unknown }[]) {
+        if (typeof t.id === 'string' && typeof t.status === 'string') tasks.set(t.id, t.status)
+      }
+      await listed($, [...tasks.values()])
+    }
+    return result
+  }).catch(($, e, next) => next(e))
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && Array.isArray(e.todos)) await listed($, applyPlan([], { items: e.todos }))
@@ -1189,16 +1203,26 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const was = top?.key
   layer(source, last!, of)
   if (top!.key !== was) said(`draw ${top!.key}: ${bar.label}, done ${bar.isDone}, over ${bar.isOver}, beneath ${below?.key ?? 'none'}, working ${e.props.isWorking}`)
-  // A fading drawing fades alone: the one beneath it, kept while it loads, would stay on show once
-  // it had gone. The next time the band is drawn, by when the fading one is up and covers it, the
-  // one beneath is drawn as the fading one ends, so nothing is left. It stays mounted, as taking it
-  // out would move the one on top into its place and load it again, which blanks the band.
-  if (bar.isOver && below !== null && !below.over) {
-    if (top!.drawn === true) {
-      below.source = played(top!.source, Infinity)
-      below.over = true
-      said(`draw: ${below.key} beneath drawn faded`)
-    } else top!.drawn = true
+  // The drawing beneath is kept only while the new one loads: left there, whatever of it the new
+  // one doesn't cover (a ring, or all of it once the new one fades) stays on show. Once the new one
+  // has had LOAD_MS to load, the one beneath is swapped for a fresh frame drawn as the new one will
+  // end, which the new one covers while it loads. A fresh frame, as the app doesn't reload a mounted
+  // frame for a changed source; the band is held by it, so the new one never moves.
+  await read($, tick)
+  if (below !== null && !below.retired) {
+    if (top!.loaded === true) {
+      below = { ...below, key: ++layers, source: played(top!.source, Infinity), settled: false, retired: true }
+      said(`draw ${below.key}: beneath ${top!.key}, drawn as it ends`)
+    } else if (!top!.timed) {
+      const laid = top!
+      laid.timed = true
+      // A frame says nothing when it has loaded, so this is a guess at it, LOAD_MS after the new
+      // drawing was laid: the band is drawn again then.
+      $.clock.after(LOAD_MS, () => {
+        laid.loaded = true
+        void update($, tick, (n: number) => n + 1).catch(() => {})
+      })
+    }
   }
   // The drawing on top says what the bar shows now; the one beneath keeps what it last said.
   top!.alt = `Progress on the current request: ${bar.label}`
@@ -1220,7 +1244,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   )
   // What the band mounts, for the trace when it changes: each frame by its drawing, and whether
   // the one on top is laid over another or alone.
-  const mounted = `${below === null ? '' : `${below.key}${below.settled ? 's' : ''}${below.over ? 'f' : ''} + `}${top!.key}${top!.settled ? 's' : ''}${below !== null ? ' over' : ' alone'}, working ${e.props.isWorking}`
+  const mounted = `${below === null ? '' : `${below.key}${below.settled ? 's' : ''}${below.retired ? 'r' : ''} + `}${top!.key}${top!.settled ? 's' : ''}${below !== null ? ' over' : ' alone'}, working ${e.props.isWorking}`
   if (mounted !== lastMounted) said(`mount ${mounted}`)
   lastMounted = mounted
   // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
@@ -1238,8 +1262,11 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 }
 
 
+// How long a new drawing is given to load before the one beneath it is swapped out.
+const LOAD_MS = 700
+
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; alt: string; drawn?: boolean; over?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; timed?: boolean; loaded?: boolean; retired?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
