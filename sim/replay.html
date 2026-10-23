@@ -64,11 +64,12 @@ function measure(svg) {
   const root = host.querySelector('svg');
   const fill = host.querySelector('rect[data-fill]');
   if (!root || !fill) { host.remove(); return { kind: 'none', note: 'no fill' }; }
-  const ends = [...host.querySelectorAll('animate, animateTransform')].map(a => (parseFloat(a.getAttribute('begin')) || 0) + (parseFloat(a.getAttribute('dur')) || 0));
+  const ends = [...host.querySelectorAll('animate, animateTransform')].filter(a => a.getAttribute('repeatCount') !== 'indefinite').map(a => (parseFloat(a.getAttribute('begin')) || 0) + (parseFloat(a.getAttribute('dur')) || 0));
   const end = Math.max(0, ...ends) + 0.1;
   // The desktop app runs a drawing's clock before it shows it: an animation that begins at 0 is
   // over by then, so it snaps to its end in the app however it eases here.
-  const atZero = [...host.querySelectorAll('animate, animateTransform, animateMotion, set')].filter(a => !(parseFloat(a.getAttribute('begin')) > 0)).length;
+  // A loop (repeatCount="indefinite") is kept to the wall clock on purpose, so its begin may be past.
+  const atZero = [...host.querySelectorAll('animate, animateTransform, animateMotion, set')].filter(a => a.getAttribute('repeatCount') !== 'indefinite' && !(parseFloat(a.getAttribute('begin')) > 0)).length;
   root.pauseAnimations();
   const samples = [];
   for (let t = 0; t <= end + 1e-9; t += 0.02) {

@@ -171,7 +171,7 @@ const BUBBLE_U = 90
 const BUBBLE_S = 2.6
 
 /** The rising bubbles' tile, as a pattern laid over a fill `inset` pixels from the outline. */
-function bubbles(inset: number): string {
+function bubbles(inset: number, begin: string): string {
   const h = H - 2 * inset
   // Across, in stretched units, a dot is drawn about half again as wide as it is tall, so it
   // reads round on a bar the band squeezes.
@@ -179,7 +179,7 @@ function bubbles(inset: number): string {
     // A tile clips what crosses its edge, so each dot is drawn again a tile above and below:
     // the part cut off one edge shows at the other, and a dot rises through it whole.
     .flatMap(([x, y, r]) => [-h, 0, h].map(dy => `<ellipse cx="${x}" cy="${(y! * h + dy).toFixed(2)}" rx="${(r! * 1.5).toFixed(2)}" ry="${r}" fill="#fff" fill-opacity="0.35"/>`)).join('')
-  return `<pattern id="bubbles" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${BUBBLE_U}" height="${h}">${dots}<animateTransform attributeName="patternTransform" type="translate" from="0 0" to="0 ${-h}" dur="${BUBBLE_S}s" begin="${LEAD_S}s" repeatCount="indefinite"/></pattern>`
+  return `<pattern id="bubbles" patternUnits="userSpaceOnUse" x="0" y="${inset}" width="${BUBBLE_U}" height="${h}">${dots}<animateTransform attributeName="patternTransform" type="translate" from="0 0" to="0 ${-h}" dur="${BUBBLE_S}s" begin="${begin}" repeatCount="indefinite"/></pattern>`
 }
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
@@ -403,7 +403,11 @@ function path(attribute: string, points: readonly [number, number][]): string {
  * it. Explicit colours: the drawing doesn't inherit currentColor, and the band refuses a drawing
  * with a <style> element.
  */
-export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true): string {
+export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true, made: number | null = null): string {
+  // The loops (the flowing light, the bubbles) keep to the wall clock when the drawing says when it
+  // was made: each new drawing picks them up where the last one's were, rather than starting them
+  // over, which the eye reads as a flicker. A drawing on its own starts them after LEAD_S.
+  const loopAt = (period: number) => made === null ? `${LEAD_S}s` : `${(-(made % period)).toFixed(3)}s`
   // Whole pixels, so the fill's top and bottom edges are crisp: a half-pixel edge is drawn half
   // see-through, and where the drawing beneath shows through it, the fill looks a pixel thicker.
   const inset = 3
@@ -494,8 +498,8 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
-${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${LEAD_S}s" repeatCount="indefinite"/></linearGradient>`}
-${isDone ? '' : bubbles(inset)}
+${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${loopAt(FLOW_S)}" repeatCount="indefinite"/></linearGradient>`}
+${isDone ? '' : bubbles(inset, loopAt(BUBBLE_S))}
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
@@ -633,7 +637,7 @@ let modelTagged = false
 // The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
 // sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
 // The next estimate's drawing eases on from `to`.
-type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number; stepBlinks: boolean }
+type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number; stepBlinks: boolean; made: number }
 let last: State | null = null
 
 // Tool calls since the model's last estimate, and whether this lapse has had its reminder.
@@ -740,9 +744,9 @@ export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, 
     // The sections slide only between two layouts of the same list.
     const was = isReturn ? at : last !== null && last.n === n ? last.at : at
     // How a drawing was made stays its own: a later redraw of it draws it the same.
-    last = { from, to, isDone, n, at, was, stepBlinks: !isReturn }
+    last = { from, to, isDone, n, at, was, stepBlinks: !isReturn, made: Date.now() / 1000 }
   }
-  return battery(last.from, last.to, last.isDone, n, slices, last.was, last.stepBlinks)
+  return battery(last.from, last.to, last.isDone, n, slices, last.was, last.stepBlinks, last.made)
 }
 
 export const register: Register = on => {
