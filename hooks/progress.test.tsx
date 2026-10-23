@@ -1099,3 +1099,32 @@ test('with a list, the empty step glows in its own section alone, and not once i
   await say($, '[D40%] Halfway into b.', 'a1')
   expect((await layers($)).at(-1)).not.toContain('data-ring')
 })
+
+test('the task tools\' list carries over into the next ask, done tasks and all', async ($, on) => {
+  engine(on)
+  let made = 0
+  on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: String(++made), subject: 'a step' } } }))
+  on('tool.call', { tool: 'TaskUpdate' }, ($, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'first', turnId: 't1' })
+  for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'TaskCreate', subject: `a${i}`, description: 'x' })
+  for (const id of ['1', '2', '3']) await $.tool.call({ tool: 'TaskUpdate', taskId: id, status: 'completed' })
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
+  await $.turn.start({ text: 'second', turnId: 't2' })
+  for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'TaskCreate', subject: `b${i}`, description: 'x' })
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '4', status: 'in_progress' })
+  // Six sections, three of them done.
+  expect(await label($, 'desktop')).toBe('50%')
+})
+
+test('a tagged message that comes by again under another id, its tag taken out, is no lapse', async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, '[D30%] Started.', 'a1')
+  await say($, ' Started.', 'a1-again')
+  expect(await call()).toEqual([])
+})

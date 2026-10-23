@@ -678,8 +678,8 @@ let responseTags = 0
 let modelTagged = false
 // Whether the model's last words to the person, mid-ask, went out with no tag.
 let missed = false
-// The model's messages already read, by uuid.
-const readIds = new Set<string>()
+// The model's messages already read, by their words.
+const seenWords = new Set<string>()
 // The task tools' list, by task id in the order made, with each task's status. It outlives an
 // ask: the tasks are the session's, and a later ask works on through them.
 const tasks = new Map<string, string>()
@@ -753,9 +753,7 @@ function startAsk() {
   untagged = 0
   reminded = false
   instructed = false
-  // A new ask works on through the task tools' list while any of it is left, and starts afresh
-  // once all of it is done.
-  if ([...tasks.values()].every(status => status === 'completed')) tasks.clear()
+  // The task tools' list is the session's: a new ask carries on with it, done tasks and all.
   statuses = [...tasks.values()]
   workers.clear()
   estimate = null
@@ -896,9 +894,14 @@ export const register: Register = on => {
       const percent = lastPercent(texts)
       // Words to the person mid-ask with no tag: the next tool call's result says so. A message
       // already read comes by again with its tag taken out, which is no lapse.
-      const again = typeof e.uuid === 'string' && readIds.has(e.uuid)
-      if (typeof e.uuid === 'string') readIds.add(e.uuid)
-      if (!again && percent === null && texts.some(text => text.trim() !== '') && (await read($, progress)).phase === 'working') missed = true
+      // It may come by again under another id, so it is known by its words, tags taken out.
+      const words = stripTags(texts.join('\n')).trim()
+      const again = seenWords.has(words)
+      seenWords.add(words)
+      if (!again && percent === null && words !== '' && (await read($, progress)).phase === 'working') {
+        missed = true
+        await trace($, `untagged: ${JSON.stringify(words.slice(0, 40))}`)
+      }
       if (percent !== null) {
         missed = false
         untagged = 0
@@ -924,7 +927,7 @@ export const register: Register = on => {
         }
         fresh = settle(fresh, meant)
         finishing = percent >= 100
-        said(`tag ${percent}% (meant ${meant}), rewind ${rewind}, calls ${calls}`)
+        await trace($, `tag ${percent}% (meant ${meant}), rewind ${rewind}, calls ${calls}`)
         await redraw($, true, rewind)
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
         const content = e.message.content.flatMap(block => {
