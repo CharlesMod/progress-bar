@@ -1050,3 +1050,15 @@ test('an update to the person with no tag is answered by the next tool call, wit
   // Said once a lapse: the call after it is quiet.
   expect(await call()).toEqual([])
 })
+
+test('a tagged message the session appends again, its tag taken out, is no lapse', async ($, on) => {
+  engine(on)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('tool.call', () => ({ result: {} }))
+  await $.prompt.compose(COMPOSE)
+  const call = async () => ((await $.tool.call({ tool: 'Bash', command: 'ls' })) as { context?: readonly string[] }).context ?? []
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, '[D30%] Started.', 'a1')
+  await say($, ' Started.', 'a1')
+  expect(await call()).toEqual([])
+})

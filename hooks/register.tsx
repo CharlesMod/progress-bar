@@ -507,14 +507,14 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // An empty bar of a working ask isn't left blank: a soft blue glow breathes in its middle,
   // inside the bar, until the first estimate gives the fill something to show.
   const rings = !isDone && from === 0 && to === 0
-    ? `<rect data-ring="" x="${(U * (1 - GLOW_W) / 2).toFixed(2)}" y="${inset}" width="${(U * GLOW_W).toFixed(2)}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${FILL_RY}" fill="url(#glowing)" opacity="${GLOW_LOW}"><animate attributeName="opacity" values="${GLOW_LOW};${GLOW_HIGH};${GLOW_LOW}" keyTimes="0;0.5;1" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" dur="${GLOW_S}s" begin="${loopAt(GLOW_S)}" repeatCount="indefinite"/></rect>`
+    ? `<rect data-ring="" x="${(U * (1 - GLOW_W) / 2).toFixed(2)}" y="${inset}" width="${(U * GLOW_W).toFixed(2)}" height="${H - 2 * inset}" fill="url(#glowing)" opacity="${GLOW_LOW}"><animate attributeName="opacity" values="${GLOW_LOW};${GLOW_HIGH};${GLOW_LOW}" keyTimes="0;0.5;1" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" dur="${GLOW_S}s" begin="${loopAt(GLOW_S)}" repeatCount="indefinite"/></rect>`
     : ''
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
 <defs><linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="0" x2="${U}" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0"/><stop offset="0.45" stop-color="#3fc7a0"/><stop offset="1" stop-color="#00dc00"/></linearGradient>
 ${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0" x2="${FLOW_U}" y1="0" y2="0" spreadMethod="repeat"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/><animateTransform attributeName="gradientTransform" type="translate" from="0" to="${FLOW_U}" dur="${FLOW_S}s" begin="${loopAt(FLOW_S)}" repeatCount="indefinite"/></linearGradient>`}
-<linearGradient id="glowing" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#4a8ce0" stop-opacity="0"/><stop offset="0.3" stop-color="#5b9ae8" stop-opacity="0.45"/><stop offset="0.5" stop-color="#6aa8f0" stop-opacity="0.7"/><stop offset="0.7" stop-color="#5b9ae8" stop-opacity="0.45"/><stop offset="1" stop-color="#4a8ce0" stop-opacity="0"/></linearGradient>
+<radialGradient id="glowing" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#6aa8f0" stop-opacity="0.75"/><stop offset="0.45" stop-color="#5b9ae8" stop-opacity="0.4"/><stop offset="1" stop-color="#4a8ce0" stop-opacity="0"/></radialGradient>
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
@@ -651,6 +651,8 @@ let responseTags = 0
 let modelTagged = false
 // Whether the model's last words to the person, mid-ask, went out with no tag.
 let missed = false
+// The model's messages already read, by uuid.
+const readIds = new Set<string>()
 // The task tools' list, by task id in the order made, with each task's status. It outlives an
 // ask: the tasks are the session's, and a later ask works on through them.
 const tasks = new Map<string, string>()
@@ -855,8 +857,11 @@ export const register: Register = on => {
         block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
       )
       const percent = lastPercent(texts)
-      // Words to the person mid-ask with no tag: the next tool call's result says so.
-      if (percent === null && texts.some(text => text.trim() !== '') && (await read($, progress)).phase === 'working') missed = true
+      // Words to the person mid-ask with no tag: the next tool call's result says so. A message
+      // already read comes by again with its tag taken out, which is no lapse.
+      const again = typeof e.uuid === 'string' && readIds.has(e.uuid)
+      if (typeof e.uuid === 'string') readIds.add(e.uuid)
+      if (!again && percent === null && texts.some(text => text.trim() !== '') && (await read($, progress)).phase === 'working') missed = true
       if (percent !== null) {
         missed = false
         untagged = 0
