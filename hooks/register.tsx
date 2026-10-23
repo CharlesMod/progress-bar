@@ -633,6 +633,15 @@ let tags: [number, number][] = []
 let responseTags = 0
 // Whether the model has tagged this ask at all: a fill from the history is no word of its.
 let modelTagged = false
+// Whether the ask left work running that will wake it (a background command or agent, a monitor,
+// a scheduled wake-up), since its last wake.
+let waiting = false
+
+/** Whether a tool call leaves work running that will wake the session when it moves. */
+function waits(e: { tool: string }): boolean {
+  if (e.tool === 'Monitor' || e.tool === 'ScheduleWakeup' || e.tool === 'CronCreate') return true
+  return (e.tool === 'Bash' || e.tool === 'Agent') && (e as { run_in_background?: unknown }).run_in_background === true
+}
 
 // The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
 // sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
@@ -688,6 +697,7 @@ function heard(percent: number) {
 
 /** Forgets the last ask's drawing: a new ask starts its bar from empty. */
 function startAsk() {
+  waiting = false
   last = null
   untagged = 0
   reminded = false
@@ -764,6 +774,7 @@ export const register: Register = on => {
     const notified = e.origin.kind === 'task-notification'
     if (notified) {
       woken = true
+      waiting = false
       await counted($, progressIn(e.text))
       return next(e)
     }
@@ -880,7 +891,11 @@ export const register: Register = on => {
         if (e.reason === 'answer' && finishing) return { percent: 100, phase: 'done' }
         // A quick answer that never gave an estimate fills its bar, without the finale.
         if (e.reason === 'answer' && !modelTagged && statuses.length === 0) return { percent: 100, phase: 'done', quiet: true }
-        return { ...p, phase: e.reason === 'answer' ? 'done' : 'stopped' }
+        // An answer ends the ask, whatever the last estimate said: the bar fills, its finale plays,
+        // and it fades. Only a stopped ask keeps where it stood.
+        // An ask that ends its turn to wait on work it left running holds, until that work wakes it.
+        if (e.reason === 'answer' && waiting) return { ...p, phase: 'done' }
+        return e.reason === 'answer' ? { percent: 100, phase: 'done' } : { ...p, phase: 'stopped' }
       })
       await seen($)
       await syncStatus($)
@@ -926,6 +941,7 @@ export const register: Register = on => {
     const result = await next(e)
     if (e.agentId !== undefined || 'deny' in result && result.deny !== undefined) return result
     if ((await read($, progress)).phase !== 'working') return result
+    if (waits(e)) waiting = true
     // A call that moves the list starts or ends a step: it is neither work on the one in progress
     // nor a lapse of it.
     if (LIST_TOOLS.has(e.tool)) return result

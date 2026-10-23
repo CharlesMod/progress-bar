@@ -88,11 +88,11 @@ test('follows the estimate forward, holds on a lower one, and holds when the tur
     await say($, 'Found more callers than expected. [D30%]', `b-${surface}`)
     expect(await label($, surface)).toBe('42.5%')
 
-    // The turn's end doesn't move it either: only the model's own [D100%] fills it.
+    // The answer ends the ask, whatever the last estimate said: the bar fills.
     await $.turn.complete({
       reason: 'answer', answer: 'Done.', durationMs: 1, isAborted: false, turnId: `t-${surface}`,
     })
-    expect(await label($, surface)).toBe('42.5%')
+    expect(await label($, surface)).toBe('100%')
   }
 })
 
@@ -544,9 +544,13 @@ test('with no list a command\'s output moves the whole bar, short of done', asyn
 test('a background task\'s notification moves the bar and does not start a new ask', async ($, on) => {
   engine(on)
   on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('tool.call', () => ({ result: {} }))
   await $.turn.start({ text: 'gate it', turnId: 't1' })
   await say($, 'Gate started. [D10%]', 'a1')
+  // A turn that ends waiting on work it left running holds its bar, rather than finishing it.
+  await $.tool.call({ tool: 'Monitor', command: 'gate' })
   await $.turn.complete({ reason: 'answer', answer: 'waiting', durationMs: 1, isAborted: false, turnId: 't1' })
+  expect(await label($, 'desktop')).not.toBe('100%')
   const text = '<task-notification><event>  39 of 78 batch: batch 9</event></task-notification>'
   await $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })
   await $.turn.start({ text, turnId: 't2' })
