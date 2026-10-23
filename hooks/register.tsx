@@ -884,13 +884,15 @@ export const register: Register = on => {
       workers.set(e.agentId, true)
       await workersMoved($)
     } else if (e.agentId === undefined) {
+      // Learning the ask resets its count, so whether it did any work is read first.
+      const worked = calls > 0
       if (e.reason === 'answer' && statuses.length === 0 && (await read($, progress)).phase === 'working') await learn($, 'asks')
       await update($, progress, (p): Progress => {
         if (p.phase !== 'working') return p
         if (p.percent === null) return { percent: null, phase: 'idle' }
         if (e.reason === 'answer' && finishing) return { percent: 100, phase: 'done' }
-        // A quick answer that never gave an estimate fills its bar, without the finale.
-        if (e.reason === 'answer' && !modelTagged && statuses.length === 0) return { percent: 100, phase: 'done', quiet: true }
+        // A quick answer (no tool calls, no estimate) fills its bar, without the finale.
+        if (e.reason === 'answer' && !modelTagged && statuses.length === 0 && !worked) return { percent: 100, phase: 'done', quiet: true }
         // An answer ends the ask, whatever the last estimate said: the bar fills, its finale plays,
         // and it fades. Only a stopped ask keeps where it stood.
         // An ask that ends its turn to wait on work it left running holds, until that work wakes it.
@@ -1128,6 +1130,12 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
+  // A fading drawing fades alone: the one beneath it, kept only while it loads, would stay on show
+  // once it had gone. It is let go the next time the band is drawn, by when the fading one is up.
+  if (bar.isOver && below !== null) {
+    if (top!.drawn === true) below = null
+    else top!.drawn = true
+  }
   // The drawing on top says what the bar shows now; the one beneath keeps what it last said.
   top!.alt = `Progress on the current request: ${bar.label}`
   // The module started afresh on a state the person had already seen: draw it as it stands.
@@ -1162,7 +1170,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; alt: string; to: number; n: number; at: number; of: number; settled?: boolean }
+type Layer = { key: number; source: string; alt: string; drawn?: boolean; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0

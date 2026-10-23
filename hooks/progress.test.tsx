@@ -959,3 +959,18 @@ test('a message right after stopping an ask carries it on, to be re-estimated, r
   await $.turn.start({ text: 'actually, change course', turnId: 't2' })
   expect(await label($, 'desktop')).toBe('50%')
 })
+
+test('an untagged answer after real work plays the finale, and a fading bar lets go of the drawing beneath', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {} }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await layers($)
+  await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
+  // Laid over the last drawing while it loads, then drawn alone, so all of it fades.
+  const first = await layers($)
+  expect(first).toHaveLength(2)
+  expect(first[1]).toContain('#ffd54a')
+  expect(await layers($)).toEqual([first[1]])
+})
