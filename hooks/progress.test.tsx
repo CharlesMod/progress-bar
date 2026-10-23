@@ -846,19 +846,20 @@ test('a finished ask\'s bar fades out after its finale, and a fresh ask brings i
   expect(Number(fade[1])).toBeGreaterThan(endOf(battery(0.7, 1, true)))
 })
 
-test('the band redrawn after the move has played draws it still, so switching back to a session doesn\'t replay it', async ($, on) => {
+test('an ordinary redraw draws the very same drawing, and coming back draws it finished, still', async ($, on) => {
   engine(on)
-  const clock = mock.clock(on, { now: 1000 })
+  on('session.attach', () => ({ clientId: 'desktop' }))
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Going. [D60%]', 'a1')
   const first = (await source($))!
   expect(first).toContain('attributeName="width"')
-  await clock.advance(10_000)
-  const again = (await source($))!
-  // The same drawing, every animation begun long enough ago to be over: nothing plays again.
-  const begins = [...again.matchAll(/\bbegin="(-?[\d.]+)s"/g)].map(m => Number(m[1]))
-  expect(begins.length).toBeGreaterThan(0)
-  expect(begins.every(b => b < 0)).toBe(true)
+  // Redrawn (a turn starting or stopping): the same string, so the app keeps its frame.
+  expect(await source($)).toBe(first)
+  // Back in the session: the same drawing, every animation over, and it stays so.
+  await $.session.attach({ surface: 'desktop' } as never)
+  const back = (await source($))!
+  expect(endOf(back)).toBeLessThanOrEqual(0)
+  expect(await source($)).toBe(back)
 })
 
 test('coming back to a session shows the bar where it stands, unanimated; only a finished ask\'s finale plays', async ($, on) => {

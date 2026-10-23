@@ -293,10 +293,9 @@ export function endOf(svg: string): number {
 
 /**
  * The drawing as it stands `elapsed` seconds after it was first shown: every animation begun that
- * much earlier, so a redraw (the app draws the band again whenever a turn starts or stops, and
- * whenever the person comes back to the session) carries on from there rather than playing it all
- * again. One begun and over by then is drawn finished; one that hasn't begun keeps a begin of at
- * least MIN_BEGIN_S, so it still plays in view. Past the drawing's end it's the same still string.
+ * much earlier. One begun and over by then is drawn finished; one that hasn't begun keeps a begin
+ * of at least MIN_BEGIN_S, so it still plays in view. Past the drawing's end it's one still string,
+ * which is how a drawing is drawn once the person comes back to the session.
  */
 export function played(svg: string, elapsed: number): string {
   if (elapsed <= 0) return svg
@@ -970,18 +969,17 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const list = await read($, steps)
   const n = Math.max(1, list.total)
   const of = list.workers ?? 0
+  // Back in the session, the app draws the band afresh: the drawings it had are drawn finished, as
+  // they would stand by now, and a new one is made still. Otherwise a drawing is never changed once
+  // made: a changed source is a new frame to the app, which blanks the band while it loads.
+  if (returning) for (const l of [top, below]) if (l !== null) l.settled = true
   const drawn = draw(bar.percent, bar.isDone, n, { at: list.done, of }, returning)
   returning = false
   const source = bar.isOver ? fadingOut(drawn) : drawn
   layer(source, last!, of)
-  // Each drawing is shown from where it has got to since it was first drawn, so a redraw never
-  // replays it; a drawing first drawn when the person comes back plays then, in view.
-  // With no clock to read, a drawing is drawn as it is.
-  const now = await $.clock.now().catch(() => null)
-  for (const l of [top, below]) if (l !== null && l.shownAt === undefined && now !== null) l.shownAt = now
   const svg = (drawing: Layer) => (
     <ui.Svg
-      source={now === null || drawing.shownAt === undefined ? drawing.source : played(drawing.source, (now - drawing.shownAt) / 1000)}
+      source={drawing.settled ? played(drawing.source, Infinity) : drawing.source}
       alt={`Progress on the current request: ${bar.label}`}
       // With no width of its own the drawing is the browser's default 300px; one wider than any
       // band is held to the band's width, and the drawing lays out inside it at 100%.
@@ -1007,7 +1005,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 }
 
 // The band's drawings: the one on top, and the last one, kept beneath it while it loads.
-type Layer = { key: number; source: string; to: number; n: number; at: number; of: number; shownAt?: number }
+type Layer = { key: number; source: string; to: number; n: number; at: number; of: number; settled?: boolean }
 let top: Layer | null = null
 let below: Layer | null = null
 let layers = 0
