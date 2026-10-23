@@ -41,7 +41,7 @@ The person tracks your progress on their latest request with a progress bar. Eac
 
 - While you keep a task list, the bar has one section per step and the tag is your estimate for the step you have in progress: [D50%] means that step is half done. A section fills only when its step is checked off, and a message that checks off a step tags the step it starts. With no list, the tag is your estimate for the whole request.
 - The bar only moves forward: a lower estimate than an earlier one leaves it where it is, so don't overshoot early.
-- When you finish, end your final message with [D100%]. Leave the tag out of replies to quick questions that take no work.
+- The bar reads a tag only once the message carrying it has finished streaming. So as soon as you judge the work done, say [D100%] at the very start of the message that says so, before the rest of your final answer, not at its end. If you know the work is done before a last tool call (a final check, a commit), put [D100%] in the update before that call. Leave the tag out of replies to quick questions that take no work.
 - The tag is removed from your message before it's saved, so you won't see your earlier estimates; judge each one fresh.`
 
 // When the person adds to an ask while it works (or right after stopping it), the model is asked
