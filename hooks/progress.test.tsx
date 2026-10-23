@@ -1111,6 +1111,8 @@ test('the task tools\' list carries over into the next ask, done tasks and all',
   for (const id of ['1', '2', '3']) await $.tool.call({ tool: 'TaskUpdate', taskId: id, status: 'completed' })
   await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' })
   await $.turn.start({ text: 'second', turnId: 't2' })
+  // All done: no list yet, so the new ask starts empty, not full.
+  expect(await label($, 'desktop')).toBe('0%')
   for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'TaskCreate', subject: `b${i}`, description: 'x' })
   await $.tool.call({ tool: 'TaskUpdate', taskId: '4', status: 'in_progress' })
   // Six sections, three of them done.

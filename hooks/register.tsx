@@ -771,8 +771,10 @@ function startAsk() {
   untagged = 0
   reminded = false
   instructed = false
-  // The task tools' list is the session's: a new ask carries on with it, done tasks and all.
-  statuses = [...tasks.values()]
+  // The task tools' list is the session's: a new ask carries on with it, done tasks and all. One
+  // all done is no list until a task is added to it, so a new ask doesn't start full.
+  const kept = [...tasks.values()]
+  statuses = kept.every(status => status === 'completed') ? [] : kept
   workers.clear()
   estimate = null
   real = null
