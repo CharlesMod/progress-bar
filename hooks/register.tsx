@@ -164,11 +164,14 @@ const FILL_RY = 2.5
 // The light flowing along a working fill: one band every FLOW_U units, moving one band a FLOW_S.
 const FLOW_U = 160
 const FLOW_S = 1.4
-// The sparks along an empty working bar: SPARKS of them, each pulsing once a PULSE_S, a spark
-// PULSE_LAG_S behind the one nearer its end, so each pulse runs in to the middle.
-const SPARKS = 11
-const PULSE_S = 1.6
-const PULSE_LAG_S = 0.12
+// The rings closing in on an empty working bar: RINGS of them, spread evenly over a RING_S loop,
+// each starting RING_OUT pixels outside the outline.
+const RINGS = 3
+const RING_S = 2.4
+const RING_OUT = 5
+// About how many of the bar's stretched units a pixel is across, on a band of a usual width, so
+// a ring grows as far out at its ends as above and below.
+const U_PER_PX = 1.4
 
 // Bubbles rising through a working fill, in a few layers, each a tile of bubbles repeated along
 // the bar and moved up one tile a loop: tiles of unlike widths, so the layers' bubbles fall
@@ -508,18 +511,19 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     ? `<rect x="-2" width="${U + 4}" y="-1.5" height="${H + 2}" rx="6" ry="5" fill="none" stroke="#ffd54a" stroke-width="3" vector-effect="non-scaling-stroke" filter="url(#glow)" opacity="0"><animate attributeName="opacity" values="${BLINKS.join(';')}" dur="${BLINK_S}s" begin="${finaleAt.toFixed(3)}s" fill="freeze"/></rect>
 `
     : ''
-  // An empty bar of a working ask isn't left blank: a row of sparks pulses, wave after wave running
-  // in from both ends to the middle, until the first estimate gives the fill something to show.
-  const pulse = !isDone && from === 0 && to === 0
-    ? Array.from({ length: SPARKS }, (_, i) => {
-      const k = (i + 0.5) / SPARKS
-      const fromEnd = Math.min(i, SPARKS - 1 - i)
-      const begin = loopAt(PULSE_S, fromEnd * PULSE_LAG_S)
-      // Placed by its own <svg> (a share of the width is no transform's), so it scales about its middle.
-      return `<svg x="${along(k)}" y="${H / 2}" overflow="visible"><use href="#spark" opacity="0.3"><animate attributeName="opacity" values="0.3;1;0.3" keyTimes="0;0.3;1" dur="${PULSE_S}s" begin="${begin}" repeatCount="indefinite"/><animateTransform attributeName="transform" type="scale" values="0.55;1;0.55" keyTimes="0;0.3;1" dur="${PULSE_S}s" begin="${begin}" repeatCount="indefinite"/></use></svg>`
+  // An empty bar of a working ask isn't left blank: rings of the outline's own shape close in on
+  // it from just outside, one after another, fading as they arrive, until the first estimate
+  // gives the fill something to show.
+  const rings = !isDone && from === 0 && to === 0
+    ? Array.from({ length: RINGS }, (_, i) => {
+      const begin = loopAt(RING_S, (i * RING_S) / RINGS)
+      const at = (out: number) => ({ x: 0.5 - out * U_PER_PX, y: 0.5 - out, w: U - 1 + 2 * out * U_PER_PX, h: H - 1 + 2 * out })
+      const a = at(RING_OUT)
+      const b = at(0)
+      const loop = (name: string, from: number, to: number) => `<animate attributeName="${name}" values="${from.toFixed(2)};${to.toFixed(2)}" keyTimes="0;1" calcMode="spline" keySplines="0.3 0 0.4 1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/>`
+      return `<rect x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="7" ry="6" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.55;0" keyTimes="0;0.45;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
     }).join('')
     : ''
-  const sparks = hoist(pulse, 'p')
   const burst = isDone ? SPARKLES.map((k, j) => sparkle(along(k), j % 2 ? -2 : H + 2, 1.3, finaleAt + 0.1 + j * 0.08)).join('\n') : ''
   // The stretched bar is a nested <svg>; its animations are hoisted onto the outer one.
   const stretched = hoist(`<svg x="0" y="0" width="100%" height="${H}" viewBox="${-MARGIN_U} 0 ${SPAN_U} ${H}" preserveAspectRatio="none" overflow="visible">
@@ -531,24 +535,22 @@ ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
 ${ticks}
 ${blinking}
+${rings}
 ${shine}
 ${flourish}
 </svg>`)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
 <defs>
-<path id="spark" d="M0 -3.4V3.4M-2.9 -1.7L2.9 1.7M-2.9 1.7L2.9 -1.7" fill="none" stroke="#d97757" stroke-width="1.2" stroke-linecap="round"/>
 <path id="star" d="M0 -4 L1.1 -1.1 L4 0 L1.1 1.1 L0 4 L-1.1 1.1 L-4 0 L-1.1 -1.1 Z" fill="#fff3b0"/>
 <filter id="glow" x="-10%" y="-60%" width="120%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <linearGradient id="shine" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
 </defs>
 <g transform="translate(0 ${PAD})">
 ${stretched.markup}
-${sparks.markup}
 ${sparkles}
 ${burst}
 </g>
 ${stretched.animations}
-${sparks.animations}
 </svg>`
 }
 
