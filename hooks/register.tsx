@@ -680,6 +680,8 @@ let responseTags = 0
 let modelTagged = false
 // Whether the model's last words to the person, mid-ask, went out with no tag.
 let missed = false
+// Whether this response's tag was read from its stream already, so its stored row isn't read again.
+let stepTagged = false
 // The model's messages already read, by their words.
 const seenWords = new Set<string>()
 // The task tools' list, by task id in the order made, with each task's status. It outlives an
@@ -922,37 +924,13 @@ export const register: Register = on => {
       const words = stripTags(texts.join('\n')).trim()
       const again = seenWords.has(words)
       seenWords.add(words)
-      if (!again && percent === null && words !== '' && (await read($, progress)).phase === 'working') {
+      if (!again && !stepTagged && percent === null && words !== '' && (await read($, progress)).phase === 'working') {
         missed = true
         await trace($, `untagged: ${JSON.stringify(words.slice(0, 40))}`)
       }
       if (percent !== null) {
-        missed = false
-        untagged = 0
-        reminded = false
-        tags.push([percent, calls])
-        responseTags += 1
-        modelTagged = true
-        const meant = calibrated(percent, (await learned($)).said)
-        // The first tag after the person added to the ask: well below the bar, the bar goes back.
-        let rewind = false
-        if (rescoping !== null) {
-          const list = tally(statuses)
-          const now = (await read($, progress)).percent ?? 0
-          rewind = (list.total > 0 ? place(meant, list) : meant) < now - ROLLBACK_MIN
-          rescoping = null
-        }
-        if (rewind) {
-          real = meant
-          estimate = meant
-          creep = null
-        } else {
-          heard(meant)
-        }
-        fresh = settle(fresh, meant)
-        finishing = percent >= 100
-        await trace($, `tag ${percent}% (meant ${meant}), rewind ${rewind}, calls ${calls}`)
-        await redraw($, true, rewind)
+        if (!stepTagged) await heardTag($, percent, 'row')
+        stepTagged = false
         // Keep the tags out of the stored row, so neither the transcript nor the model's context carries them.
         const content = e.message.content.flatMap(block => {
           if (block.type !== 'text' || typeof block.text !== 'string') return [block]
@@ -969,12 +947,23 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // Each model response starts with no tag of its own.
+  // Each response's tag is also read from its own text as it streams: a host may take the tags
+  // out before the row is stored, where the session.append hook would have read them.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId === undefined) {
       fresh = null
       responseTags = 0
+      stepTagged = false
     }
-    return yield* next(e)
+    const result = yield* next(e)
+    if (e.agentId === undefined && typeof result.answer === 'string') {
+      const percent = lastPercent([result.answer])
+      if (percent !== null) {
+        stepTagged = true
+        await heardTag($, percent, 'stream')
+      }
+    }
+    return result
   })
 
   // The turn's end only marks the ask as no longer working, so the next typed ask starts afresh;
@@ -1173,6 +1162,36 @@ export const register: Register = on => {
 }
 
 let lastError = ''
+
+/** The model's tag for the step (or the ask) in progress, as read from `where`. */
+async function heardTag($: EngineInterface, percent: number, where: string) {
+    missed = false
+    untagged = 0
+    reminded = false
+    tags.push([percent, calls])
+    responseTags += 1
+    modelTagged = true
+    const meant = calibrated(percent, (await learned($)).said)
+    // The first tag after the person added to the ask: well below the bar, the bar goes back.
+    let rewind = false
+    if (rescoping !== null) {
+      const list = tally(statuses)
+      const now = (await read($, progress)).percent ?? 0
+      rewind = (list.total > 0 ? place(meant, list) : meant) < now - ROLLBACK_MIN
+      rescoping = null
+    }
+    if (rewind) {
+      real = meant
+      estimate = meant
+      creep = null
+    } else {
+      heard(meant)
+    }
+    fresh = settle(fresh, meant)
+    finishing = percent >= 100
+    await trace($, `tag ${percent}% (from the ${where}) (meant ${meant}), rewind ${rewind}, calls ${calls}`)
+    await redraw($, true, rewind)
+}
 
 // A short trace of what the bar decided, kept in the store under TRACE_KEY so a session can be
 // read back after the fact: the turns, the person's messages and what each drawing was. Drawing
