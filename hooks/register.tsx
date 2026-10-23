@@ -167,10 +167,12 @@ const FILL_RY = 2.5
 const FLOW_U = 160
 const FLOW_S = 1.4
 // The rings closing in on an empty working bar: RINGS of them, spread evenly over a RING_S loop,
-// each from the bar's inside edge to RING_END of its length, a line through its middle.
+// each from the bar's inside edge to RING_IN pixels inside it.
 const RINGS = 3
 const RING_S = 2.4
-const RING_END = 0.3
+const RING_IN = 3
+// About how many of the bar's stretched units a pixel is across, on a band of a usual width.
+const U_PER_PX = 1.4
 
 
 // The fill's easing: a gentle start and a long, soft landing (a cubic bezier from time to distance,
@@ -495,7 +497,8 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
     ? Array.from({ length: RINGS }, (_, i) => {
       const begin = loopAt(RING_S, (i * RING_S) / RINGS)
       const a = { x: INSET_U, y: inset, w: W, h: H - 2 * inset }
-      const b = { x: U / 2 - (RING_END * W) / 2, y: H / 2 - 0.5, w: RING_END * W, h: 1 }
+      // In from every edge by the same few pixels (a pixel is about U_PER_PX units across).
+      const b = { x: a.x + RING_IN * U_PER_PX, y: a.y + RING_IN, w: a.w - 2 * RING_IN * U_PER_PX, h: a.h - 2 * RING_IN }
       const loop = (name: string, from: number, to: number) => `<animate attributeName="${name}" values="${from.toFixed(2)};${to.toFixed(2)}" keyTimes="0;1" calcMode="spline" keySplines="0.3 0 0.4 1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/>`
       return `<rect x="${a.x.toFixed(2)}" y="${a.y.toFixed(2)}" width="${a.w.toFixed(2)}" height="${a.h.toFixed(2)}" rx="${FILL_RX}" ry="${FILL_RY}" fill="none" stroke="#7fb0ec" stroke-width="1" vector-effect="non-scaling-stroke" opacity="0">${loop('x', a.x, b.x)}${loop('y', a.y, b.y)}${loop('width', a.w, b.w)}${loop('height', a.h, b.h)}<animate attributeName="opacity" values="0;0.7;0" keyTimes="0;0.25;1" dur="${RING_S}s" begin="${begin}" repeatCount="indefinite"/></rect>`
     }).join('')
@@ -1230,7 +1233,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   if (fresh && (await read($, shownState)) === stateKey(await read($, progress), list)) top!.settled = true
   const svg = (drawing: Layer) => (
     <ui.Svg
-      source={drawing.settled ? played(drawing.source, Infinity) : drawing.source}
+      source={numbered(drawing.settled ? played(drawing.source, Infinity) : drawing.source, drawing)}
       alt={drawing.alt}
       // With no width of its own the drawing is the browser's default 300px; one wider than any
       // band is held to the band's width, and the drawing lays out inside it at 100%.
@@ -1261,6 +1264,15 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
 
 }
 
+
+// While chasing what the band shows, each drawing carries its number (the trace's) in its corner,
+// small and dim, so the person can say which one they see.
+const NUMBERED = true
+function numbered(svg: string, l: Layer): string {
+  if (!NUMBERED) return svg
+  const at = svg.lastIndexOf('</svg>')
+  return `${svg.slice(0, at)}<text x="100%" dx="${-4 - (l.key % 5) * 16}" y="${PAD + H - 4}" font-size="6" font-family="sans-serif" fill="#999" text-anchor="end">${l.key}${l.retired ? 'r' : ''}</text>${svg.slice(at)}`
+}
 
 // How long a new drawing is given to load before the one beneath it is swapped out.
 const LOAD_MS = 700
