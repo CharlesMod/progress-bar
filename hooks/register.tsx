@@ -186,6 +186,24 @@ const GLOW_S = 2.8
 // long settle.
 const EASE = { x1: 0.5, y1: 0, x2: 0.15, y2: 1 }
 const KEY_SPLINE = `${EASE.x1} ${EASE.y1} ${EASE.x2} ${EASE.y2}`
+// The same settle, for a move that starts already moving: it sets off at about the speed the
+// last one had, rather than from rest.
+const GLIDE_SPLINE = `0.2 0.3 ${EASE.x2} ${EASE.y2}`
+
+/** How far along an EASE move is (0-1) at `t` (0-1) of its time. */
+export function eased(t: number): number {
+  if (t <= 0) return 0
+  if (t >= 1) return 1
+  const bez = (p1: number, p2: number, u: number) => 3 * (1 - u) * (1 - u) * u * p1 + 3 * (1 - u) * u * u * p2 + u * u * u
+  let lo = 0
+  let hi = 1
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2
+    if (bez(EASE.x1, EASE.x2, mid) < t) lo = mid
+    else hi = mid
+  }
+  return bez(EASE.y1, EASE.y2, (lo + hi) / 2)
+}
 
 /** Seconds the fill takes to ease from `from` to `to`: a short move is quick, a long one unhurried. */
 export function fillSeconds(from: number, to: number): number {
@@ -388,7 +406,7 @@ export function fadingOut(svg: string): string {
  * One attribute eased through `points` (seconds, value), holding between them, frozen at the last.
  * A hold at the start is the animation's begin, never part of it, so it never begins at 0.
  */
-function path(attribute: string, points: readonly [number, number][]): string {
+function path(attribute: string, points: readonly [number, number][], first = KEY_SPLINE): string {
   let kept = points.filter(([t], i) => i === 0 || t - points[i - 1]![0] > 1e-6)
   if (kept.length < 2 || kept.every(([, v]) => Math.abs(v - kept[0]![1]) < 0.005)) return ''
   while (kept.length > 2 && Math.abs(kept[1]![1] - kept[0]![1]) < 0.005) kept = kept.slice(1)
@@ -396,7 +414,7 @@ function path(attribute: string, points: readonly [number, number][]): string {
   const shift = begin - kept[0]![0]
   const end = kept[kept.length - 1]![0] + shift
   const dur = end - begin
-  return `<animate attributeName="${attribute}" values="${kept.map(([, v]) => v.toFixed(2)).join(';')}" keyTimes="${kept.map(([t]) => ((t + shift - begin) / dur).toFixed(4)).join(';')}" calcMode="spline" keySplines="${kept.slice(1).map(() => KEY_SPLINE).join(';')}" begin="${begin.toFixed(3)}s" dur="${dur.toFixed(3)}s" fill="freeze"/>`
+  return `<animate attributeName="${attribute}" values="${kept.map(([, v]) => v.toFixed(2)).join(';')}" keyTimes="${kept.map(([t]) => ((t + shift - begin) / dur).toFixed(4)).join(';')}" calcMode="spline" keySplines="${kept.slice(1).map((_, i) => (i === 0 ? first : KEY_SPLINE)).join(';')}" begin="${begin.toFixed(3)}s" dur="${dur.toFixed(3)}s" fill="freeze"/>`
 }
 
 /**
@@ -412,7 +430,10 @@ function path(attribute: string, points: readonly [number, number][]): string {
  * it. Explicit colours: the drawing doesn't inherit currentColor, and the band refuses a drawing
  * with a <style> element.
  */
-export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true, made: number | null = null): string {
+export function battery(from: number, to: number, isDone: boolean, n = 1, slices = { at: 0, of: 0 }, was = slices.at, stepBlinks = true, made: number | null = null, startAt: number | null = null): string {
+  // A move that takes over from one still under way starts where that one's fill is (`startAt`,
+  // along the bar) at once and already moving, so the fill glides on rather than stopping.
+  const lead = startAt === null ? LEAD_S : MIN_BEGIN_S
   // The loops (the flowing light, the rings) keep to the wall clock when the drawing says when it
   // was made: each new drawing picks them up where the last one's were, rather than starting them
   // over, which the eye reads as a flicker. A drawing on its own starts them after LEAD_S.
@@ -432,12 +453,12 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   // off while they are still wide and they blink there; only then do the sections slide to their
   // new widths, and the fill eases on into the step in progress.
   const finished = reflow > 0 && was < slices.at ? Math.max(from, Math.min(to, slices.at / n)) : from
-  const a = onBar(from, before)
-  const m1 = onBar(finished, before)
-  const reach = LEAD_S + fillSeconds(a, m1)
+  const a = startAt ?? onBar(from, before)
+  const m1 = Math.max(a, onBar(finished, before))
+  const reach = lead + fillSeconds(a, m1)
   // A drawing made on the person's return blinks no step: they finished while the person was away.
-  const blinksBefore = stepBlinks ? blinkTimes(a, m1, n, isDone, before, LEAD_S) : []
-  const slideAt = reflow > 0 ? Math.max(reach, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : LEAD_S
+  const blinksBefore = stepBlinks ? blinkTimes(a, m1, n, isDone, before, lead) : []
+  const slideAt = reflow > 0 ? Math.max(reach, ...blinksBefore.map(({ at }) => at + SECTION_BLINK_S)) : lead
   const m2 = onBar(finished, edges)
   const c = onBar(to, edges)
   const fillAt = slideAt + reflow
@@ -445,7 +466,7 @@ export function battery(from: number, to: number, isDone: boolean, n = 1, slices
   const total = fillAt + seconds
   // The fill keeps to its place through the sections' slide, then eases to the new estimate.
   const W = U - 2 * INSET_U
-  const move = path('width', [[0, a * W], [LEAD_S, a * W], [reach, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]])
+  const move = path('width', [[0, a * W], [lead, a * W], [reach, m1 * W], [slideAt, m1 * W], [fillAt, m2 * W], [total, c * W]], startAt === null ? KEY_SPLINE : GLIDE_SPLINE)
   // The fill's leading edge is rounded, a meniscus rather than a cut. While the ask works, a soft
   // light flows along it, as a loading bar does; a finished ask's fill is still.
   const fill = (attributes: string) => `<rect ${attributes} x="${INSET_U}" y="${inset}" height="${H - 2 * inset}" rx="${FILL_RX}" ry="${FILL_RY}" width="${((move ? a : c) * W).toFixed(2)}">${move}</rect>`
@@ -520,11 +541,11 @@ ${isDone ? '' : `<linearGradient id="flow" gradientUnits="userSpaceOnUse" x1="0"
 <clipPath id="c"><rect x="0" y="0" width="${U}" height="${H}" rx="5" ry="4"/></clipPath>${cut}</defs>
 ${outlines}
 ${n > 1 ? `<g clip-path="url(#sec)">${body}</g>` : body}
-${ticks}
+<g data-extra="">${ticks}
 ${blinking}
 ${rings}
 ${shine}
-${flourish}
+${flourish}</g>
 </svg>`)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H + 2 * PAD}" overflow="visible">
 <defs>
@@ -534,8 +555,8 @@ ${flourish}
 </defs>
 <g transform="translate(0 ${PAD})">
 ${stretched.markup}
-${sparkles}
-${burst}
+<g data-extra="">${sparkles}
+${burst}</g>
 </g>
 ${stretched.animations}
 </svg>`
@@ -671,7 +692,7 @@ function waits(e: { tool: string }): boolean {
 // The bar's last state: the fill eased to `to` (a fraction of the ask) from `from`, cut into `n`
 // sections with step `at` zoomed, having slid from step `was` zoomed, with the ask done or not.
 // The next estimate's drawing eases on from `to`.
-type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number; stepBlinks: boolean; made: number }
+type State = { from: number; to: number; isDone: boolean; n: number; at: number; was: number; stepBlinks: boolean; made: number; startAt: number | null }
 let last: State | null = null
 
 // Tool calls since the model's last estimate, and whether this lapse has had its reminder.
@@ -780,12 +801,22 @@ export function draw(percent: number, isDone: boolean, n = 1, slices = { at: 0, 
     // A drawing made on the person's return shows where the ask stands, as if it had all happened
     // in view: no fill moving, no section sliding, no step blinking; only a finished ask's finale.
     const from = isReturn ? to : last === null ? 0 : last.to === to ? to : Math.min(to, last.to)
+    // A move still under way, in the same sections: the new one takes over from where its fill is
+    // when the new drawing shows (about SHOW_S from now), moving on, not from where it would end.
+    let startAt: number | null = null
+    if (!isReturn && last !== null && last.n === n && last.at === at && last.was === at && to >= last.to) {
+      const a0 = last.startAt ?? onBar(last.from, edges)
+      const c0 = onBar(last.to, edges)
+      const into = nowS() + SHOW_S - last.made - (last.startAt === null ? LEAD_S : MIN_BEGIN_S)
+      const span = fillSeconds(a0, c0)
+      if (span > 0 && into < span) startAt = a0 + (c0 - a0) * eased(Math.max(0, into) / span)
+    }
     // The sections slide only between two layouts of the same list.
     const was = isReturn ? at : last !== null && last.n === n ? last.at : at
     // How a drawing was made stays its own: a later redraw of it draws it the same.
-    last = { from, to, isDone, n, at, was, stepBlinks: !isReturn, made: Date.now() / 1000 }
+    last = { from, to, isDone, n, at, was, stepBlinks: !isReturn, made: nowS(), startAt }
   }
-  return battery(last.from, last.to, last.isDone, n, slices, last.was, last.stepBlinks, last.made)
+  return battery(last.from, last.to, last.isDone, n, slices, last.was, last.stepBlinks, last.made, last.startAt)
 }
 
 export const register: Register = on => {
@@ -1200,6 +1231,7 @@ async function listed($: EngineInterface, next: string[]) {
  * working; a tag moves any, a continuation's carrying on from where it was.
  */
 async function redraw($: EngineInterface, tagged: boolean, rewind = false) {
+  await tickClock($)
   const list = tally(statuses)
   await update($, steps, (): Steps => ({ ...list, workers: workers.size }))
   await update($, progress, (p): Progress => {
@@ -1264,7 +1296,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
     if (top!.loaded === true) {
       // The copy runs as the new one does, a moment behind it, so its fill never shows ahead.
       // Without the outlines: two of them a moment apart, as a slide moves them, shimmer.
-      below = { ...below, key: ++layers, source: outlineless(played(top!.source, top!.after! / 1000 - BEHIND_S)), settled: false, retired: true }
+      below = { ...below, key: ++layers, source: fillOnly(played(top!.source, top!.after! / 1000 - BEHIND_S)), settled: false, retired: true }
       said(`draw ${below.key}: beneath ${top!.key}, a copy behind it`)
     } else if (!top!.timed) {
       const laid = top!
@@ -1326,6 +1358,11 @@ function numbered(svg: string, l: Layer): string {
   return `${svg.slice(0, at)}<text x="100%" dx="${-4 - (l.key % 5) * 16}" y="${PAD + H - 4}" font-size="6" font-family="sans-serif" fill="#999" text-anchor="end">${l.key}${l.retired ? 'r' : ''}</text>${svg.slice(at)}`
 }
 
+/** A drawing with only its fill: no outlines, no finale, glow or blinks, which would play twice. */
+export function fillOnly(svg: string): string {
+  return outlineless(svg).replace(/<g data-extra="">[\s\S]*?<\/g>/g, '')
+}
+
 /** A drawing without its outlines, and the hoisted animations that drove them. */
 export function outlineless(svg: string): string {
   const ids: string[] = []
@@ -1339,6 +1376,20 @@ export function outlineless(svg: string): string {
 
 // How long a new drawing is given to load before the one beneath it is swapped out.
 const LOAD_MS = 700
+// About how long a new drawing takes to show once made.
+const SHOW_S = 0.15
+
+// The time, in seconds, as the engine's clock last said it: read by each handler that redraws,
+// since drawing itself asks the engine nothing. The page's clock until the first.
+let clockS: number | null = null
+const nowS = () => clockS ?? Date.now() / 1000
+async function tickClock($: EngineInterface) {
+  try {
+    clockS = (await $.clock.now()) / 1000
+  } catch {
+    clockS = null
+  }
+}
 const RING_LOAD_MS = 300
 // How far the copy beneath runs behind the drawing on top, as its own frame loads a moment late.
 const BEHIND_S = 0.08

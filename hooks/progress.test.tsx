@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { applyPlan, crept, outlineless, rescope, ROLLBACK_MIN, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
+import { applyPlan, crept, fillOnly, rescope, ROLLBACK_MIN, endOf, fadingOut, hoist, MIN_BEGIN_S, played, calibrated, inferred, learnedFrom, readHistory, reminder, battery, blinkTimes, fillSeconds, LEAD_S, lastPercent, layout, onBar, place, progressIn, REFLOW_S, settle, stripTags, tally, ZOOM } from './register'
 
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: true, hint: 'esc to interrupt' } } as const
 const BAND_PROPS = {
@@ -307,6 +307,8 @@ function moveOf(svg: string): [number, number] {
 
 test('the fill eases from the last estimate to the new one, and the finale plays once, frozen at its end', async ($, on) => {
   engine(on)
+  // Each move has long finished by the next.
+  const clock = mock.clock(on)
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Started. [D20%]', 'a1')
   let svg = (await source($))!
@@ -315,12 +317,14 @@ test('the fill eases from the last estimate to the new one, and the finale plays
   expect(svg).toContain('fill="freeze"')
   // Nothing has changed: the band is handed the same drawing, so it keeps the one it has.
   expect(await source($)).toBe(svg)
+  await clock.advance(10_000)
   await say($, 'More. [D60%]', 'a2')
   svg = (await source($))!
   expect(moveOf(svg)).toEqual([0.2, 0.6])
   expect(svg).not.toContain('href="#star"')
 
   // The model's [D100%] eases the fill home, then the finale plays once and leaves the glow.
+  await clock.advance(10_000)
   await say($, 'Done. [D100%]', 'a3')
   svg = (await source($))!
   expect(moveOf(svg)).toEqual([0.6, 1])
@@ -483,6 +487,7 @@ test('a quick answer with no estimate fills its bar without the finale', async (
 
 test('an estimate too small to see keeps the drawing the band has, so it does not blink', async ($, on) => {
   engine(on)
+  const clock = mock.clock(on)
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Started. [D40%]', 'a1')
   const svg = (await source($))!
@@ -490,6 +495,7 @@ test('an estimate too small to see keeps the drawing the band has, so it does no
   expect(await source($)).toBe(svg)
   expect(await label($, 'desktop')).toBe('41%')
   // Small moves add up: once the fill has gone far enough to see, it eases on from where it was drawn.
+  await clock.advance(10_000)
   await say($, 'More. [D44%]', 'a3')
   expect(moveOf((await source($))!)).toEqual([0.4, 0.44])
 })
@@ -977,9 +983,9 @@ test('an untagged answer after real work plays the finale, and a fading bar lets
   const after = await layers($)
   expect(after[1]).toBe(first[1])
   expect(after[0]).not.toBe(first[0])
-  // A copy of the one on top, a moment behind it: the finale and the fade included.
-  expect(after[0]).toContain('#ffd54a')
-  expect(after[0]!.replace(/begin="-?[\d.]+s"/g, '')).toBe(outlineless(first[1]!).replace(/begin="-?[\d.]+s"/g, ''))
+  // A copy of the one on top's fill, a moment behind it, fading with it: no finale of its own.
+  expect(after[0]).not.toContain('#ffd54a')
+  expect(after[0]!.replace(/begin="-?[\d.]+s"/g, '')).toBe(fillOnly(first[1]!).replace(/begin="-?[\d.]+s"/g, ''))
   expect(after[0]).not.toContain('data-outline')
 })
 
@@ -1062,4 +1068,17 @@ test('a tagged message the session appends again, its tag taken out, is no lapse
   await say($, '[D30%] Started.', 'a1')
   await say($, ' Started.', 'a1')
   expect(await call()).toEqual([])
+})
+
+test('a move that takes over from one still under way starts where its fill is, already moving', async ($, on) => {
+  engine(on)
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  await say($, '[D20%] Started.', 'a1')
+  await layers($)
+  await say($, '[D60%] Quick progress.', 'a2')
+  const svg = (await layers($)).at(-1)!
+  const width = svg.match(/attributeName="width" values="([\d.]+);/)
+  // The first move had barely begun: the second starts near the empty bar, not at 20%.
+  expect(Number(width![1])).toBeLessThan(100)
+  expect(svg).toContain('keySplines="0.2 0.3')
 })

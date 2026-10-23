@@ -30,6 +30,8 @@ function engine(on: On) {
 function scenario(name: string, about: string, store: Record<string, unknown> | null, script: (s: Script) => Promise<void>) {
   test(`sim: ${name}`, async ($, on) => {
     engine(on)
+    // Each step a while after the last, as in a real ask: a move has played out by the next.
+    const clock = mock.clock(on)
     if (store !== null) mock.store(on, store)
     await $.prompt.compose(COMPOSE)
     let index = 0
@@ -68,6 +70,7 @@ function scenario(name: string, about: string, store: Record<string, unknown> | 
         await s.snap(`answers`)
       },
       snap: async event => {
+        await clock.advance(10_000)
         const ui = await $.ui.mount({ plugin: 'progress-bar', surface: 'desktop', ...BAND })
         const svgs = (await ui.findAll({ type: 'Svg' })).filter(el => el.props.alt !== '')
         // The band's tree lists the drawing beneath first and the one on top last.
