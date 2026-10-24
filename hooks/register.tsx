@@ -1402,6 +1402,7 @@ async function drawBand($: EngineInterface, e: RenderInput<'AbovePrompt'>, next:
   const mounted = `${below === null ? '' : `${below.key}${below.settled ? 's' : ''}${below.retired ? 'r' : ''} + `}${top!.key}${top!.settled ? 's' : ''}${below !== null ? ' over' : ' alone'}, working ${e.props.isWorking}`
   if (mounted !== lastMounted) said(`mount ${mounted}`)
   lastMounted = mounted
+  await bandDrew($, bar.label)
   // The new drawing's frame is blank while it loads, so the last one stays mounted beneath it and
   // shows through until it has. Each is keyed by its drawing, so the one beneath is never mounted
   // again: it was on top a moment ago, and only its place in the band changes.
@@ -1509,15 +1510,71 @@ export function textBar(bar: { percent: number; label: string }): string {
 
 // Only the terminal and the desktop app draw the band above the prompt and the hint line under it.
 // While another surface is attached (a phone or claude.ai over Remote Control, VS Code), the text
-// bar is also pinned as the mod's status line, which every surface draws.
+// bar is also pinned as the mod's status line, which every surface draws. So it is when the band
+// hasn't drawn the bar's latest state a moment after it changed: a desktop app showing a session
+// that runs on another machine declares itself `desktop` and never raises the band.
 const DRAWS_BAR = new Set(['terminal', 'desktop'])
+
+/** How long the band has to draw a new state before the status line carries it instead. */
+const BAND_GRACE_MS = 1500
+
+// The label the band last drew, and the pending check that it caught up.
+let bandLabel: string | null = null
+let bandCheck: { cancel: () => void } | null = null
+let lastSurfaces = ''
 
 async function syncStatus($: EngineInterface) {
   try {
     const surfaces = await $.session.surfaces()
-    const bar = surfaces.some(s => !DRAWS_BAR.has(s)) ? await shown($) : null
-    $.ui.status(bar === null ? undefined : textBar(bar))
+    const seen = surfaces.join(',')
+    if (seen !== lastSurfaces) said(`surfaces: ${seen || 'none'}`)
+    lastSurfaces = seen
+    const bar = await shown($)
+    if (bar === null) {
+      bandCheck?.cancel()
+      bandCheck = null
+      $.ui.status(undefined)
+      return
+    }
+    // A surface without the band, or a band already found not drawing: the line follows at once.
+    if (surfaces.some(s => !DRAWS_BAR.has(s)) || statusPinned && bandLabel !== bar.label) {
+      pin($, textBar(bar))
+      return
+    }
+    if (bandLabel === bar.label) {
+      unpin($)
+      return
+    }
+    bandCheck?.cancel()
+    bandCheck = $.clock.after(BAND_GRACE_MS, () => {
+      bandCheck = null
+      void (async () => {
+        const now = await shown($)
+        if (now !== null && bandLabel !== now.label) pin($, textBar(now))
+      })().catch(() => {})
+    })
   } catch {
     // Best effort: a missed status line never costs the bar or the tag stripping.
   }
+}
+
+let statusPinned = false
+function pin($: EngineInterface, text: string) {
+  if (!statusPinned) said('status: the band is not drawing, the status line carries the bar')
+  statusPinned = true
+  $.ui.status(text)
+}
+function unpin($: EngineInterface) {
+  if (statusPinned) said('status: the band draws the bar again')
+  statusPinned = false
+  $.ui.status(undefined)
+}
+
+/** The band has drawn `label`: the status line need not carry it, unless a surface without the band is attached. */
+async function bandDrew($: EngineInterface, label: string) {
+  if (bandLabel === label) return
+  bandLabel = label
+  bandCheck?.cancel()
+  bandCheck = null
+  await syncStatus($)
 }

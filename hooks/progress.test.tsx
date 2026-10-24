@@ -426,8 +426,11 @@ test('with a Remote Control client attached, the bar is pinned as the status lin
     status.push(e.text)
     return { value: undefined }
   })
+  // The grace the band has to draw a new state runs out at once.
+  on('clock.after', () => ({ value: undefined }))
   await $.turn.start({ text: 'job', turnId: 't1' })
   await say($, 'Started. [D50%]', 'a1')
+  expect(await label($, 'desktop')).toBe('50%')
   expect(status.at(-1)).toBeUndefined()
 
   surfaces = ['desktop', 'mobile']
@@ -436,6 +439,27 @@ test('with a Remote Control client attached, the bar is pinned as the status lin
 
   surfaces = ['desktop']
   await say($, 'Nearly. [D90%]', 'a3')
+  expect(await label($, 'desktop')).toBe('90%')
+  expect(status.at(-1)).toBeUndefined()
+})
+
+test('a desktop app whose band never draws the bar gets it as the status line', async ($, on) => {
+  engine(on)
+  const status: (string | undefined)[] = []
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('ui.status', (_, e) => {
+    status.push(e.text)
+    return { value: undefined }
+  })
+  on('clock.after', () => ({ value: undefined }))
+  await $.turn.start({ text: 'job', turnId: 't1' })
+  // A desktop app showing a session that runs on another machine raises no band.
+  await say($, 'Started. [D25%]', 'a1')
+  expect(status.at(-1)).toBe('████░░░░░░░░░░░░ 25%')
+  await say($, 'Further. [D50%]', 'a2')
+  expect(status.at(-1)).toBe('████████░░░░░░░░ 50%')
+  // Once a band draws it, the line steps aside.
+  expect(await label($, 'desktop')).toBe('50%')
   expect(status.at(-1)).toBeUndefined()
 })
 
